@@ -1,0 +1,62 @@
+export default function WaitingRoom({ players, playerId, tournament, onStart }) {
+  const currentPlayer = players.find((p) => p.id === playerId);
+  const isHost = currentPlayer?.isHost;
+  const canStart = players.filter((p) => p.connected).length >= 2 && !tournament;
+
+  return (
+    <div className="waiting-room">
+      <div className="players-card">
+        <div className="players-header">
+          <h2>Players</h2>
+          <span className="players-badge">{players.length}/12</span>
+        </div>
+        <ul className="player-list">
+          {players.map((p, i) => (
+            <li
+              key={p.id}
+              className={`player-item ${!p.connected ? 'disconnected' : ''} ${p.eliminated ? 'eliminated' : ''}`}
+              style={{ animationDelay: `${i * 0.08}s` }}
+            >
+              <span className="player-avatar">{p.avatar}</span>
+              <span className="player-name">
+                {p.name}
+                {p.isHost && <span className="host-badge">Host</span>}
+              </span>
+              <span className="player-coins">{p.coins ?? 0} 🪙</span>
+              <span className="player-status">
+                {p.connected ? (
+                  <span className="status-dot online" />
+                ) : (
+                  <span className="status-dot offline" />
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+        {players.length === 0 && (
+          <div className="empty-state">Waiting for players...</div>
+        )}
+        {isHost && (
+          <button
+            className="start-btn"
+            onClick={onStart}
+            disabled={!canStart}
+          >
+            {tournament ? 'Tournament in progress...' : 'Start Tournament'}
+          </button>
+        )}
+        {!isHost && (
+          <p className="waiting-msg">Waiting for host to start the tournament...</p>
+        )}
+        {tournament && tournament.phase === 'pairing' && (
+          <div className="pairing-animation">
+            <span className="pairing-dot" />
+            <span className="pairing-dot" />
+            <span className="pairing-dot" />
+            <span>Pairing next players...</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
