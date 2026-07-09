@@ -2,14 +2,25 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
-import { createBoard, makeMove } from './gameLogic.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { createBoard, makeMove, createMineBoard, revealMineCell } from './gameLogic.js';
 import {
-  createTournament, getNextMatch, applyMatchResult,
-  addCoins, penalizeDraw, releasePlayers,
+  createTournament, startRound, createGameForSeries, finalizeSeries,
+  checkRoundComplete, addCoins, penalizeDraw, getMostCoinsPlayer, getRoundResults,
 } from './tournament.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(cors());
+
+const clientDist = path.join(__dirname, '../../client/dist');
+app.use(express.static(clientDist));
+app.get('*', (req, res) => {
+  if (!req.path.startsWith('/socket.io')) {
+    res.sendFile(path.join(clientDist, 'index.html'));
+  }
+});
 const server = createServer(app);
 const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
@@ -17,10 +28,13 @@ const io = new Server(server, {
 
 const rooms = new Map();
 const timerIntervals = new Map();
+const bettingIntervals = new Map();
 
 const TIME_LIMIT = 30000;
+const MOVE_COOLDOWN = 800;
 const MAX_SPEED_POINTS = 50;
-const DRAW_PENALTY = 100;
+const INITIAL_COINS = 1000;
+const BET_TIME_LIMIT = 60000;
 
 const THEMES = [
   { x: '#f7971e', o: '#00b09b', bg1: '#0f0c29', bg2: '#302b63', glow: '#ffd200' },
@@ -41,9 +55,10 @@ function getNextTheme() {
 }
 
 const AVATARS = [
-  '😂', '🤣', '😊', '🥰', '😎', '🤩',
-  '😜', '🥳', '😏', '🤪', '😭', '😤',
-  '🫡', '😈', '🤡', '👽', '🤖', '🎃',
+  'mario', 'luigi', 'peach', 'bowser', 'toad', 'yoshi',
+  'boo', 'star', 'fireflower', 'koopa', 'daisy', 'rosalina',
+  'wario', 'waluigi', 'shark', 'smileShark',
+  'chinesePrincess', 'americanEagle', 'mexican', 'realtor', 'sumo', 'mexicanWoman', 'colombia', 'businessMan', 'chespirito', 'baby',
 ];
 
 let avatarIndex = 0;
@@ -53,74 +68,401 @@ function getNextAvatar() {
   return av;
 }
 
+function getPlayerCoins(tournament, playerId) {
+  if (!tournament) return null;
+  const p = tournament.players.find((pl) => pl.id === playerId);
+  return p ? (p.coins || 0) : null;
+}
+
 function emitRoomUpdate(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
   io.to(roomId).emit('room-update', {
-    players: room.players.map((p) => ({
-      id: p.id, name: p.name, avatar: p.avatar,
-      connected: p.connected, inMatch: p.inMatch,
-      eliminated: p.eliminated, isHost: p.isHost,
-      coins: p.coins || 0,
-    })),
+    players: room.players.map((p) => {
+      const tCoins = getPlayerCoins(room.tournament, p.id);
+      return {
+        id: p.id, name: p.name, avatar: p.avatar,
+        connected: p.connected, inMatch: p.inMatch,
+        eliminated: p.eliminated, isHost: p.isHost,
+        coins: tCoins !== null ? tCoins : (p.coins || 0),
+      };
+    }),
+    tournament: room.tournament,
+    gameType: room.gameType || 'tictactoe',
+  });
+}
+
+function initMatchTimer(game) {
+  const limit = game.type === 'minefinder' ? 60000 : TIME_LIMIT;
+  game.timeP1 = limit;
+  game.timeP2 = limit;
+  game.turnStartedAt = Date.now();
+  game.moveCooldownUntil = Date.now() + MOVE_COOLDOWN;
+  game.theme = getNextTheme();
+}
+
+function getTimerState(game) {
+  if (!game || game.status !== 'playing') return null;
+  const now = Date.now();
+  const elapsed = now - game.turnStartedAt;
+  const p1 = Math.max(0, game.timeP1 - (game.currentTurn === game.player1.id ? elapsed : 0));
+  const p2 = Math.max(0, game.timeP2 - (game.currentTurn === game.player2.id ? elapsed : 0));
+  return { p1, p2, currentTurn: game.currentTurn };
+}
+
+function switchTurn(game) {
+  const now = Date.now();
+  const elapsed = now - game.turnStartedAt;
+  if (game.currentTurn === game.player1.id) {
+    game.timeP1 = Math.max(0, game.timeP1 - elapsed);
+  } else {
+    game.timeP2 = Math.max(0, game.timeP2 - elapsed);
+  }
+  game.currentTurn = game.currentTurn === game.player1.id ? game.player2.id : game.player1.id;
+  game.turnStartedAt = Date.now();
+  game.moveCooldownUntil = Date.now() + MOVE_COOLDOWN;
+}
+
+function calcSpeedPoints(game) {
+  const elapsed = Date.now() - game.turnStartedAt;
+  return Math.max(0, Math.round(MAX_SPEED_POINTS * (1 - elapsed / TIME_LIMIT)));
+}
+
+function broadcastBetTimer(roomId) {
+  if (bettingIntervals.has(roomId)) return;
+  const interval = setInterval(() => {
+    const room = rooms.get(roomId);
+    if (!room || !room.tournament) {
+      clearInterval(interval); bettingIntervals.delete(roomId); return;
+    }
+    const series = room.tournament.currentSeries;
+    if (!series || series.status !== 'betting') {
+      clearInterval(interval); bettingIntervals.delete(roomId); return;
+    }
+    const remaining = Math.max(0, series.bettingEndAt - Date.now());
+    io.to(roomId).emit('betting-timer', { remaining });
+  }, 250);
+  bettingIntervals.set(roomId, interval);
+}
+
+function startBettingPhase(roomId, series) {
+  const room = rooms.get(roomId);
+  if (!room || !room.tournament) return;
+
+  series.bets = {};
+  series.bettingEndAt = Date.now() + BET_TIME_LIMIT;
+  series.status = 'betting';
+
+  const p1Info = {
+    id: series.player1.id, name: series.player1.name,
+    avatar: series.player1.avatar, coins: getPlayerCoins(room.tournament, series.player1.id),
+  };
+  const p2Info = {
+    id: series.player2.id, name: series.player2.name,
+    avatar: series.player2.avatar, coins: getPlayerCoins(room.tournament, series.player2.id),
+  };
+  const roomPlayers = room.players.filter(p => p.connected).map(p => ({
+    id: p.id, name: p.name, avatar: p.avatar,
+    eliminated: p.eliminated,
+    coins: getPlayerCoins(room.tournament, p.id) || 0,
+  }));
+
+  io.to(roomId).emit('betting-start', {
+    matchId: series.id,
+    player1: p1Info, player2: p2Info,
+    players: roomPlayers,
+    bettingEndAt: series.bettingEndAt,
+    round: room.tournament.round,
+    seriesId: series.id,
+  });
+
+  broadcastBetTimer(roomId);
+
+  series.bettingTimer = setTimeout(() => {
+    finalizeBetting(roomId, series);
+  }, BET_TIME_LIMIT);
+}
+
+function finalizeBetting(roomId, series) {
+  const room = rooms.get(roomId);
+  if (!room || !room.tournament || series.status !== 'betting') return;
+
+  if (series.bettingTimer) { clearTimeout(series.bettingTimer); series.bettingTimer = null; }
+  const interval = bettingIntervals.get(roomId);
+  if (interval) { clearInterval(interval); bettingIntervals.delete(roomId); }
+
+  const tPlayers = room.tournament.players;
+  for (const pId of [series.player1.id, series.player2.id]) {
+    if (!series.bets[pId]) {
+      const tp = tPlayers.find(p => p.id === pId);
+      series.bets[pId] = { on: pId, amount: tp ? Math.min(100, tp.coins) : 0 };
+    }
+  }
+  for (const [bettorId, bet] of Object.entries(series.bets)) {
+    const tp = tPlayers.find(p => p.id === bettorId);
+    if (tp) tp.coins = Math.max(0, tp.coins - bet.amount);
+  }
+  series.totalPot = Object.values(series.bets).reduce((sum, b) => sum + b.amount, 0);
+  series.status = 'playing';
+
+  io.to(roomId).emit('betting-finished', {
+    matchId: series.id, bets: series.bets, totalPot: series.totalPot,
+  });
+
+  setTimeout(() => startGame(roomId), 3000);
+}
+
+function startGame(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || !room.tournament) return;
+  const series = room.tournament.currentSeries;
+  if (!series) return;
+
+  const game = createGameForSeries(room.tournament, series, room.gameType || 'tictactoe');
+  if (!game) return;
+
+  initMatchTimer(game);
+  io.to(roomId).emit('match-start', { match: game, series });
+  startTimerInterval(roomId);
+}
+
+function launchNextSeries(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || !room.tournament) return;
+
+  while (room.tournament.seriesIndex < room.tournament.seriesQueue.length) {
+    const pair = room.tournament.seriesQueue[room.tournament.seriesIndex];
+    if (!pair || !pair[1]) {
+      const byePlayer = pair && pair[0] ? room.tournament.players.find(p => p.id === pair[0].id) : null;
+      if (byePlayer) {
+        for (const p of room.tournament.players) {
+          if (p.id !== byePlayer.id && !p.eliminated) p.eliminated = true;
+        }
+      }
+      room.tournament.seriesIndex++;
+      continue;
+    }
+    const p1 = room.tournament.players.find(p => p.id === pair[0].id);
+    const p2 = room.tournament.players.find(p => p.id === pair[1].id);
+    if (!p1 || !p2 || p1.eliminated || p2.eliminated) {
+      room.tournament.seriesIndex++;
+      continue;
+    }
+
+    p1.inMatch = true;
+    p2.inMatch = true;
+
+    const series = {
+      id: Date.now(),
+      player1: { id: p1.id, name: p1.name, avatar: p1.avatar },
+      player2: { id: p2.id, name: p2.name, avatar: p2.avatar },
+      games: [],
+      p1wins: 0, p2wins: 0,
+      status: 'betting', winner: null,
+    };
+    room.tournament.currentSeries = series;
+    room.tournament.currentGame = null;
+    startBettingPhase(roomId, series);
+    return;
+  }
+
+  checkAndAdvance(roomId);
+}
+
+function checkAndAdvance(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || !room.tournament) return;
+
+  const status = checkRoundComplete(room.tournament);
+  if (!status) return;
+  if (status.finished) {
+    finishTournament(roomId);
+    return;
+  }
+  if (status.advance) {
+    const results = getRoundResults(room.tournament, room.tournament.round);
+    io.to(roomId).emit('round-results', results);
+
+    setTimeout(() => {
+      room.tournament.round++;
+      const info = startRound(room.tournament);
+      if (!info) {
+        finishTournament(roomId);
+        return;
+      }
+      io.to(roomId).emit('round-start', {
+        round: room.tournament.round,
+        message: `Round ${room.tournament.round} starting!`,
+      });
+      setTimeout(() => launchNextSeries(roomId), 4000);
+    }, 8000);
+    return;
+  }
+}
+
+function finishTournament(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || !room.tournament) return;
+
+  if (!room.tournament.champion && room.tournament.currentSeries && room.tournament.currentSeries.winner) {
+    const winnerId = room.tournament.currentSeries.winner;
+    room.tournament.champion = room.tournament.players.find(p => p.id === winnerId);
+  }
+
+  const champ = room.tournament.champion;
+  let runnerUp = null;
+  if (room.tournament.players) {
+    const notChamp = room.tournament.players.filter(p => !champ || p.id !== champ.id);
+    runnerUp = notChamp.length > 0 ? notChamp[0] : null;
+  }
+  const richest = getMostCoinsPlayer(room.tournament);
+
+  io.to(roomId).emit('tournament-end', {
+    champion: champ,
+    runnerUp,
+    mostCoins: richest,
     tournament: room.tournament,
   });
 }
 
-function initMatchTimer(match) {
-  match.timeP1 = TIME_LIMIT;
-  match.timeP2 = TIME_LIMIT;
-  match.turnStartedAt = Date.now();
-  match.theme = getNextTheme();
+function distributePot(tournament, series, winnerId) {
+  if (!series.totalPot || !series.bets) return;
+  const winningBets = Object.entries(series.bets).filter(([_, b]) => b.on === winnerId);
+  const winningTotal = winningBets.reduce((s, [_, b]) => s + b.amount, 0);
+  if (winningTotal <= 0) return;
+  const boostedPot = Math.floor(series.totalPot * 1.3);
+  for (const [bettorId, bet] of winningBets) {
+    const tp = tournament.players.find(p => p.id === bettorId);
+    if (tp) {
+      tp.coins += Math.floor(boostedPot * bet.amount / winningTotal);
+    }
+  }
 }
 
-function getTimerState(match) {
-  if (!match || match.status !== 'playing') return null;
-  const now = Date.now();
-  const elapsed = now - match.turnStartedAt;
-  const p1 = Math.max(0, match.timeP1 - (match.currentTurn === match.player1.id ? elapsed : 0));
-  const p2 = Math.max(0, match.timeP2 - (match.currentTurn === match.player2.id ? elapsed : 0));
-  return { p1, p2, currentTurn: match.currentTurn };
+function refundBets(tournament, series) {
+  if (!series.totalPot || !series.bets) return;
+  for (const [bettorId, bet] of Object.entries(series.bets)) {
+    const tp = tournament.players.find(p => p.id === bettorId);
+    if (tp) tp.coins += bet.amount;
+  }
+  series.totalPot = 0;
 }
 
-function switchTurn(match) {
-  const now = Date.now();
-  const elapsed = now - match.turnStartedAt;
-  if (match.currentTurn === match.player1.id) {
-    match.timeP1 = Math.max(0, match.timeP1 - elapsed);
+function handleAfterGame(roomId, game, winnerId, loserId, isDraw) {
+  const room = rooms.get(roomId);
+  if (!room || !room.tournament) return;
+  const series = room.tournament.currentSeries;
+  if (!series) return;
+
+  if (isDraw) {
+    const gamesPlayed = series.games.length;
+    if (gamesPlayed < 2) {
+      stopTimerInterval(roomId);
+      io.to(roomId).emit('game-end', {
+        gameIndex: game.gameIndex,
+        message: 'Draw! One more game...',
+      });
+      scheduleNextGame(roomId);
+      return;
+    }
   } else {
-    match.timeP2 = Math.max(0, match.timeP2 - elapsed);
+    if (winnerId === series.player1.id) series.p1wins++;
+    else if (winnerId === series.player2.id) series.p2wins++;
+
+    const gamesPlayed = series.games.length;
+    if (gamesPlayed < 2) {
+      stopTimerInterval(roomId);
+      io.to(roomId).emit('game-end', {
+        gameIndex: game.gameIndex,
+        message: `Game ${game.gameIndex + 1} complete! Rematch starting...`,
+      });
+      scheduleNextGame(roomId);
+      return;
+    }
   }
-  match.currentTurn =
-    match.currentTurn === match.player1.id ? match.player2.id : match.player1.id;
-  match.turnStartedAt = Date.now();
-}
 
-function calcSpeedPoints(match) {
-  const elapsed = Date.now() - match.turnStartedAt;
-  return Math.max(0, Math.round(MAX_SPEED_POINTS * (1 - elapsed / TIME_LIMIT)));
-}
+  const result = finalizeSeries(room.tournament, series);
+  stopTimerInterval(roomId);
 
-function scheduleNextMatch(roomId) {
-  const room = rooms.get(roomId);
-  if (!room || !room.tournament) return;
-  const nextMatch = getNextMatch(room.tournament);
-  if (nextMatch) {
-    setTimeout(() => {
-      initMatchTimer(nextMatch);
-      io.to(roomId).emit('match-start', { match: nextMatch });
-      startTimerInterval(roomId);
-    }, 2000);
+  if (result.winner) {
+    distributePot(room.tournament, series, result.winner.id);
+  } else {
+    refundBets(room.tournament, series);
   }
+
+  io.to(roomId).emit('series-result', {
+    seriesId: series.id,
+    winner: result.winner,
+    loserId: result.loserId,
+    p1wins: series.p1wins,
+    p2wins: series.p2wins,
+  });
+
+  setTimeout(() => {
+    io.to(roomId).emit('tournament-update', { tournament: room.tournament });
+    launchNextSeries(roomId);
+  }, 6000);
 }
 
-function handleTournamentEnd(roomId) {
-  const room = rooms.get(roomId);
-  if (!room || !room.tournament) return;
-  if (room.tournament.phase === 'finished') {
-    io.to(roomId).emit('tournament-end', { champion: room.tournament.champion });
-  } else if (room.tournament.phase === 'pairing') {
-    scheduleNextMatch(roomId);
+function scheduleNextGame(roomId) {
+  setTimeout(() => startGame(roomId), 4000);
+}
+
+function endMineTurn(room, roomId, game, reason) {
+  const currentPlayerId = game.currentTurn;
+  const opponentId = game.player1.id === currentPlayerId ? game.player2.id : game.player1.id;
+
+  game.playerTurns[currentPlayerId] = (game.playerTurns[currentPlayerId] || 0) + 1;
+  game.lastOpponentScore = game.turnScores[currentPlayerId] || 0;
+  game.turnIndex++;
+
+  const p1Turns = game.playerTurns[game.player1.id] || 0;
+  const p2Turns = game.playerTurns[game.player2.id] || 0;
+
+  if (p1Turns >= 2 && p2Turns >= 2) {
+    endMineFinderGame(room, roomId, game);
+    return;
+  }
+
+  game.board = createMineBoard(10, 10, 16);
+  game.turnScores = { [game.player1.id]: 0, [game.player2.id]: 0 };
+  game.currentTurn = opponentId;
+  game.turnStartedAt = Date.now();
+  game.moveCooldownUntil = Date.now() + MOVE_COOLDOWN;
+
+  io.to(roomId).emit('mine-turn-start', {
+    matchId: game.id,
+    board: game.board,
+    currentTurn: game.currentTurn,
+    moveCooldownUntil: game.moveCooldownUntil,
+    scores: game.scores,
+    turnIndex: game.turnIndex,
+    playerTurns: game.playerTurns,
+    lastOpponentScore: game.lastOpponentScore,
+    reason,
+  });
+}
+
+function endMineFinderGame(room, roomId, game) {
+  game.status = 'finished';
+  stopTimerInterval(roomId);
+  const p1Score = game.scores[game.player1.id] || 0;
+  const p2Score = game.scores[game.player2.id] || 0;
+  const winnerId = p1Score > p2Score ? game.player1.id : (p2Score > p1Score ? game.player2.id : null);
+  const winnerPlayer = winnerId ? room.tournament.players.find((p) => p.id === winnerId) : null;
+  const draw = !winnerId;
+
+  io.to(roomId).emit('match-result', {
+    match: game, winner: winnerPlayer, draw,
+    winCombo: null, scores: game.scores, tournament: room.tournament,
+  });
+
+  if (winnerId) {
+    const loserId = winnerId === game.player1.id ? game.player2.id : game.player1.id;
+    handleAfterGame(roomId, game, winnerId, loserId, false);
+  } else {
+    penalizeDraw(room.tournament, game.player1.id, game.player2.id);
+    handleAfterGame(roomId, game, null, null, true);
   }
 }
 
@@ -128,37 +470,34 @@ function startTimerInterval(roomId) {
   if (timerIntervals.has(roomId)) return;
   const interval = setInterval(() => {
     const room = rooms.get(roomId);
-    if (!room || !room.tournament || !room.tournament.currentMatch) {
-      clearInterval(interval);
-      timerIntervals.delete(roomId);
-      return;
+    if (!room || !room.tournament || !room.tournament.currentGame) {
+      clearInterval(interval); timerIntervals.delete(roomId); return;
     }
-    const match = room.tournament.currentMatch;
-    if (match.status !== 'playing') return;
+    const game = room.tournament.currentGame;
+    if (game.status !== 'playing') return;
 
-    const state = getTimerState(match);
+    const state = getTimerState(game);
     io.to(roomId).emit('timer-update', state);
 
-    const remaining = match.currentTurn === match.player1.id ? state.p1 : state.p2;
+    const remaining = game.currentTurn === game.player1.id ? state.p1 : state.p2;
     if (remaining <= 0) {
-      const loserId = match.currentTurn;
-      const winnerId = loserId === match.player1.id ? match.player2.id : match.player1.id;
-      const winnerPlayer = room.players.find((p) => p.id === winnerId);
+      if (game.type === 'minefinder') {
+        addCoins(room.tournament, game.currentTurn, -200);
+        endMineTurn(room, roomId, game, 'timeout');
+      } else {
+        const loserId = game.currentTurn;
+        const winnerId = loserId === game.player1.id ? game.player2.id : game.player1.id;
+        const winnerPlayer = room.players.find((p) => p.id === winnerId);
+        game.status = 'finished';
+        game.winner = winnerId;
 
-      match.status = 'finished';
-      match.winner = winnerId;
-      applyMatchResult(room.tournament, winnerId, loserId);
+        io.to(roomId).emit('match-result', {
+          match: game, winner: winnerPlayer, draw: false,
+          winCombo: null, byTimeout: true, tournament: room.tournament,
+        });
 
-      io.to(roomId).emit('match-result', {
-        match,
-        winner: winnerPlayer,
-        draw: false,
-        winCombo: null,
-        byTimeout: true,
-        tournament: room.tournament,
-      });
-
-      handleTournamentEnd(roomId);
+        handleAfterGame(roomId, game, winnerId, loserId, false);
+      }
     }
   }, 250);
   timerIntervals.set(roomId, interval);
@@ -166,9 +505,33 @@ function startTimerInterval(roomId) {
 
 function stopTimerInterval(roomId) {
   const interval = timerIntervals.get(roomId);
-  if (interval) {
-    clearInterval(interval);
-    timerIntervals.delete(roomId);
+  if (interval) { clearInterval(interval); timerIntervals.delete(roomId); }
+}
+
+function handleDisconnectMatch(room, roomId, socket) {
+  const tournament = room.tournament;
+  if (!tournament) return;
+  const series = tournament.currentSeries;
+  const game = tournament.currentGame;
+
+  if (series && series.status === 'betting') {
+    if (series.bettingTimer) clearTimeout(series.bettingTimer);
+    series.status = 'playing';
+  }
+
+  if (game && game.status === 'playing') {
+    stopTimerInterval(roomId);
+    const otherId = game.player1.id === socket.id ? game.player2.id : game.player1.id;
+    game.status = 'finished';
+    game.winner = otherId;
+    const otherPlayer = room.players.find((p) => p.id === otherId);
+
+    io.to(roomId).emit('match-result', {
+      match: game, winner: otherPlayer, draw: false,
+      byDisconnect: true, tournament,
+    });
+
+    handleAfterGame(roomId, game, otherId, socket.id, false);
   }
 }
 
@@ -176,164 +539,212 @@ io.on('connection', (socket) => {
   let currentRoom = null;
   let currentPlayer = null;
 
-  socket.on('join-room', ({ roomId, playerName }, callback) => {
+  socket.on('join-room', ({ roomId, playerName, avatar }, callback) => {
     let room = rooms.get(roomId);
     if (!room) {
-      room = {
-        id: roomId,
-        players: [],
-        tournament: null,
-        hostId: socket.id,
-      };
+      room = { id: roomId, players: [], tournament: null, hostId: socket.id };
       rooms.set(roomId, room);
     }
-    if (room.players.length >= 12) {
-      return callback({ error: 'Room is full (max 12 players)' });
-    }
-    if (room.tournament && room.tournament.phase === 'finished') {
+    if (room.players.length >= 16) return callback({ error: 'Room is full (max 16 players)' });
+    if (room.tournament && (room.tournament.phase === 'finished' || room.tournament.phase === 'cancelled')) {
       room.tournament = null;
     }
+    if (!avatar || room.players.some((p) => p.avatar === avatar)) avatar = getNextAvatar();
 
     const player = {
-      id: socket.id,
-      name: playerName,
-      avatar: getNextAvatar(),
-      connected: true,
-      inMatch: false,
-      eliminated: false,
-      isHost: room.players.length === 0,
-      coins: 0,
+      id: socket.id, name: playerName, avatar, connected: true,
+      inMatch: false, eliminated: false,
+      isHost: room.players.length === 0, coins: INITIAL_COINS,
     };
     room.players.push(player);
     currentRoom = roomId;
     currentPlayer = player;
-
     socket.join(roomId);
     emitRoomUpdate(roomId);
     callback({ success: true, playerId: socket.id, roomId });
   });
 
-  socket.on('start-tournament', () => {
+  socket.on('new-tournament', () => {
     const room = rooms.get(currentRoom);
-    if (!room || room.hostId !== socket.id) return;
-    if (room.players.length < 2) return;
-
-    room.tournament = createTournament(room.players);
-    const match = getNextMatch(room.tournament);
-    if (match) initMatchTimer(match);
-
-    io.to(currentRoom).emit('tournament-start', { tournament: room.tournament });
-    if (match) {
-      io.to(currentRoom).emit('match-start', { match });
-      startTimerInterval(currentRoom);
+    if (!room) return;
+    room.tournament = null;
+    room.gameType = undefined;
+    for (const p of room.players) {
+      p.inMatch = false;
+      p.eliminated = false;
     }
+    emitRoomUpdate(currentRoom);
+  });
+
+  socket.on('start-tournament', ({ gameType = 'tictactoe' } = {}) => {
+    const room = rooms.get(currentRoom);
+    if (!room || room.hostId !== socket.id || room.players.length < 2) return;
+
+    room.gameType = gameType;
+    room.tournament = createTournament(room.players);
+    io.to(currentRoom).emit('tournament-start', { tournament: room.tournament, gameType });
+
+    const info = startRound(room.tournament);
+    if (info) {
+      setTimeout(() => {
+        io.to(currentRoom).emit('round-start', {
+          round: room.tournament.round,
+          message: `Round ${room.tournament.round} starting!`,
+        });
+        setTimeout(() => launchNextSeries(currentRoom), 2000);
+      }, 1000);
+    } else if (room.tournament.phase === 'finished') {
+      finishTournament(currentRoom);
+    }
+  });
+
+  socket.on('place-bet', ({ matchId, amount, on }) => {
+    const room = rooms.get(currentRoom);
+    if (!room || !room.tournament || !room.tournament.currentSeries) return;
+    const series = room.tournament.currentSeries;
+    if (series.status !== 'betting') return;
+    const roomPlayer = room.players.find(p => p.id === socket.id);
+    if (!roomPlayer || !roomPlayer.connected || roomPlayer.eliminated) return;
+    if (on !== series.player1.id && on !== series.player2.id) return;
+    const tPlayer = room.tournament.players.find((p) => p.id === socket.id);
+    if (!tPlayer || series.bets[socket.id]) return;
+    const betAmount = Math.max(0, Math.min(Math.floor(amount), tPlayer.coins));
+    series.bets[socket.id] = { on, amount: betAmount };
+    io.to(currentRoom).emit('bet-update', {
+      matchId, bettorId: socket.id, on, amount: betAmount,
+    });
   });
 
   socket.on('make-move', ({ matchId, cellIndex }) => {
     const room = rooms.get(currentRoom);
     if (!room || !room.tournament) return;
+    const game = room.tournament.currentGame;
+    if (!game || game.id !== matchId || game.status !== 'playing') return;
+    if (game.currentTurn !== socket.id) return;
+    if (game.moveCooldownUntil && Date.now() < game.moveCooldownUntil) return;
 
-    const match = room.tournament.currentMatch;
-    if (!match || match.id !== matchId) return;
-    if (match.status !== 'playing') return;
-    if (match.currentTurn !== socket.id) return;
-
-    const speedPoints = calcSpeedPoints(match);
+    const speedPoints = calcSpeedPoints(game);
     addCoins(room.tournament, socket.id, speedPoints);
 
-    const playerMark = match.player1.id === socket.id ? 'X' : 'O';
-    const result = makeMove(match.board, cellIndex, playerMark);
-    if (!result.valid) return;
+    for (const tp of room.tournament.players) {
+      tp.coins = (tp.coins || 0) + 100;
+    }
 
-    match.board = result.board;
-    match.moves.push({ playerId: socket.id, cellIndex, mark: playerMark, speedPoints });
+    if (game.type === 'minefinder') {
+      const result = revealMineCell(game, cellIndex);
+      if (!result.valid) return;
 
-    if (result.win || result.draw) {
-      match.status = 'finished';
-      stopTimerInterval(currentRoom);
-      switchTurn(match);
+      game.moves.push({ playerId: socket.id, cellIndex });
 
-      if (result.win) {
-        match.winner = socket.id;
-        const loserId = match.player1.id === socket.id ? match.player2.id : match.player1.id;
-        applyMatchResult(room.tournament, socket.id, loserId);
-      } else {
-        match.winner = null;
-        releasePlayers(room.tournament, match.player1.id, match.player2.id);
-        penalizeDraw(room.tournament, match.player1.id, match.player2.id);
-        room.tournament.currentMatch = null;
-        room.tournament.phase = 'pairing';
-        const remaining = room.tournament.players.filter((p) => !p.eliminated);
-        if (remaining.length === 1) {
-          room.tournament.champion = remaining[0];
-          room.tournament.phase = 'finished';
-        } else {
-          room.tournament.round++;
-        }
+      if (result.mine) {
+        io.to(currentRoom).emit('mine-hit', {
+          matchId: game.id,
+          cellIndex: result.cellIndex,
+          scores: game.scores,
+          currentTurn: game.currentTurn,
+          moveCooldownUntil: game.moveCooldownUntil,
+        });
+        setTimeout(() => endMineTurn(room, currentRoom, game, 'mine'), 1200);
+        return;
       }
 
-      io.to(currentRoom).emit('match-result', {
-        match,
-        winner: result.winner ? room.tournament.players.find((p) => p.id === socket.id) : null,
-        draw: result.draw,
-        winCombo: result.winCombo,
-        tournament: room.tournament,
-      });
+      game.turnScores[socket.id] = (game.turnScores[socket.id] || 0) + 1;
+      game.scores[socket.id] = (game.scores[socket.id] || 0) + 1;
 
-      handleTournamentEnd(currentRoom);
+      const turnNum = game.playerTurns[socket.id] || 0;
+      if (turnNum >= 1 && game.turnScores[socket.id] > game.lastOpponentScore) {
+        endMineTurn(room, currentRoom, game, 'beat');
+        return;
+      }
+
+      io.to(currentRoom).emit('mine-board-update', {
+        matchId: game.id,
+        board: game.board,
+        cellIndex: result.cellIndex,
+        scores: game.scores,
+        currentTurn: game.currentTurn,
+        moveCooldownUntil: game.moveCooldownUntil,
+      });
       return;
     }
 
-    switchTurn(match);
+    const playerMark = game.player1.id === socket.id ? 'X' : 'O';
+    const result = makeMove(game.board, cellIndex, playerMark);
+    if (!result.valid) return;
+
+    game.board = result.board;
+    game.moves.push({ playerId: socket.id, cellIndex, mark: playerMark, speedPoints });
+
+    if (result.win || result.draw) {
+      game.status = 'finished';
+      stopTimerInterval(currentRoom);
+      switchTurn(game);
+
+      const winnerPlayer = result.win
+        ? room.tournament.players.find((p) => p.id === socket.id)
+        : null;
+      io.to(currentRoom).emit('match-result', {
+        match: game, winner: winnerPlayer, draw: result.draw,
+        winCombo: result.winCombo, tournament: room.tournament,
+      });
+
+      if (result.win) {
+        const loserId = game.player1.id === socket.id ? game.player2.id : game.player1.id;
+        handleAfterGame(currentRoom, game, socket.id, loserId, false);
+      } else {
+        penalizeDraw(room.tournament, game.player1.id, game.player2.id);
+        handleAfterGame(currentRoom, game, null, null, true);
+      }
+      return;
+    }
+
+    switchTurn(game);
     io.to(currentRoom).emit('board-update', {
-      matchId: match.id,
-      board: match.board,
-      currentTurn: match.currentTurn,
+      matchId: game.id, board: game.board,
+      currentTurn: game.currentTurn,
+      moveCooldownUntil: game.moveCooldownUntil,
     });
+  });
+
+  socket.on('leave-room', () => {
+    const room = rooms.get(currentRoom);
+    if (!room) return;
+    const player = room.players.find((p) => p.id === socket.id);
+    socket.leave(currentRoom);
+    if (player) {
+      player.connected = false;
+      io.to(currentRoom).emit('player-abandoned', { playerName: player.name, playerId: player.id });
+    }
+    if (room.tournament && room.tournament.currentGame &&
+        (room.tournament.currentGame.player1.id === socket.id ||
+         room.tournament.currentGame.player2.id === socket.id)) {
+      handleDisconnectMatch(room, currentRoom, socket);
+      return;
+    }
+    emitRoomUpdate(currentRoom);
   });
 
   socket.on('disconnect', () => {
     const room = rooms.get(currentRoom);
     if (!room) return;
-
     const player = room.players.find((p) => p.id === socket.id);
     if (player) player.connected = false;
 
     if (room.tournament) {
       const activePlayers = room.players.filter((p) => p.connected && !p.eliminated);
-      if (activePlayers.length < 2 && room.tournament.phase !== 'finished') {
+      if (activePlayers.length < 2 && room.tournament.phase !== 'finished' && room.tournament.phase !== 'cancelled') {
         room.tournament.phase = 'cancelled';
         stopTimerInterval(currentRoom);
         io.to(currentRoom).emit('tournament-cancelled', { reason: 'Too many players disconnected' });
       }
-
-      if (room.tournament.currentMatch &&
-          (room.tournament.currentMatch.player1.id === socket.id ||
-           room.tournament.currentMatch.player2.id === socket.id)) {
-        stopTimerInterval(currentRoom);
-        const otherId = room.tournament.currentMatch.player1.id === socket.id
-          ? room.tournament.currentMatch.player2.id
-          : room.tournament.currentMatch.player1.id;
-
-        room.tournament.currentMatch.status = 'finished';
-        room.tournament.currentMatch.winner = otherId;
-        const otherPlayer = room.players.find((p) => p.id === otherId);
-        applyMatchResult(room.tournament, otherId, socket.id);
-
-        io.to(currentRoom).emit('match-result', {
-          match: room.tournament.currentMatch,
-          winner: otherPlayer,
-          draw: false,
-          byDisconnect: true,
-          tournament: room.tournament,
-        });
-
-        handleTournamentEnd(currentRoom);
+      if (room.tournament.currentGame &&
+          (room.tournament.currentGame.player1.id === socket.id ||
+           room.tournament.currentGame.player2.id === socket.id)) {
+        if (player) io.to(currentRoom).emit('player-abandoned', { playerName: player.name, playerId: player.id });
+        handleDisconnectMatch(room, currentRoom, socket);
       }
     }
-
     emitRoomUpdate(currentRoom);
-
     if (room.players.every((p) => !p.connected)) {
       stopTimerInterval(currentRoom);
       rooms.delete(currentRoom);

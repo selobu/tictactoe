@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
+import { MARIO_AVATARS } from '../utils/marioAvatars';
+import MarioAvatar from './MarioAvatar';
 
 export default function Lobby({ onJoin, joining, error }) {
   const [name, setName] = useState('');
   const [room, setRoom] = useState('');
+  const [selectedAvatar, setSelectedAvatar] = useState(0);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -10,13 +13,16 @@ export default function Lobby({ onJoin, joining, error }) {
     if (roomParam) setRoom(roomParam);
     const savedName = localStorage.getItem('ttt-player-name');
     if (savedName) setName(savedName);
+    const savedAvatar = localStorage.getItem('ttt-player-avatar');
+    if (savedAvatar) setSelectedAvatar(Number(savedAvatar));
   }, []);
 
   function handleSubmit(e) {
     e.preventDefault();
     if (!name.trim() || !room.trim()) return;
     localStorage.setItem('ttt-player-name', name.trim());
-    onJoin(name.trim(), room.trim());
+    localStorage.setItem('ttt-player-avatar', String(selectedAvatar));
+    onJoin(name.trim(), room.trim(), MARIO_AVATARS[selectedAvatar].key);
   }
 
   function generateRoom() {
@@ -45,6 +51,24 @@ export default function Lobby({ onJoin, joining, error }) {
               required
               disabled={joining}
             />
+          </div>
+          <div className="form-group">
+            <label>Pick Your Character</label>
+            <div className="avatar-grid">
+              {MARIO_AVATARS.map((av, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className={`avatar-option ${selectedAvatar === i ? 'selected' : ''}`}
+                  onClick={() => setSelectedAvatar(i)}
+                  disabled={joining}
+                  title={av.name}
+                >
+                  <MarioAvatar character={av.key} size={36} />
+                  <span className="avatar-name">{av.name}</span>
+                </button>
+              ))}
+            </div>
           </div>
           <div className="form-group">
             <label>Room Code</label>

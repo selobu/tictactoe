@@ -35,3 +35,58 @@ export function checkWin(board) {
 }
 
 export { WIN_COMBOS };
+
+/* ========== MINE FINDER ========== */
+
+export function createMineBoard(rows = 10, cols = 10, mineCount = 16) {
+  const total = rows * cols;
+  const cells = Array.from({ length: total }, () => ({
+    revealed: false,
+    mine: false,
+    flag: false,
+    adjacent: 0,
+  }));
+
+  const indices = Array.from({ length: total }, (_, i) => i);
+  for (let i = indices.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indices[i], indices[j]] = [indices[j], indices[i]];
+  }
+  for (let k = 0; k < mineCount; k++) {
+    cells[indices[k]].mine = true;
+  }
+
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      const idx = i * cols + j;
+      if (cells[idx].mine) continue;
+      let count = 0;
+      for (let di = -1; di <= 1; di++) {
+        for (let dj = -1; dj <= 1; dj++) {
+          if (di === 0 && dj === 0) continue;
+          const ni = i + di, nj = j + dj;
+          if (ni >= 0 && ni < rows && nj >= 0 && nj < cols) {
+            if (cells[ni * cols + nj].mine) count++;
+          }
+        }
+      }
+      cells[idx].adjacent = count;
+    }
+  }
+
+  return { cells, rows, cols, mineCount, totalSafe: total - mineCount };
+}
+
+export function revealMineCell(game, cellIndex) {
+  const { cells } = game.board;
+  const cell = cells[cellIndex];
+  if (!cell || cell.revealed) return { valid: false };
+
+  cell.revealed = true;
+
+  return {
+    valid: true,
+    mine: cell.mine,
+    cellIndex,
+  };
+}
