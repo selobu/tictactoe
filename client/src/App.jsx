@@ -446,7 +446,6 @@ export default function App() {
                     <span className="player-tag-name">{currentMatch.player1.name}</span>
                     <span className="player-tag-label">{currentMatch.player1.id === playerId ? '(you)' : '(opponent)'}</span>
                   </span>
-                  {gameType !== 'minefinder' && <span className="player-tag-mark mark-x">X</span>}
                   {winner?.id === currentMatch.player1.id && <span className="grey-cup">🏆</span>}
                 </span>
                 {!winner && <span className="vs">⚔️</span>}
@@ -457,7 +456,6 @@ export default function App() {
                     <span className="player-tag-name">{currentMatch.player2.name}</span>
                     <span className="player-tag-label">{currentMatch.player2.id === playerId ? '(you)' : '(opponent)'}</span>
                   </span>
-                  {gameType !== 'minefinder' && <span className="player-tag-mark mark-o">O</span>}
                   {winner?.id === currentMatch.player2.id && <span className="grey-cup">🏆</span>}
                 </span>
                 <TimerClock
