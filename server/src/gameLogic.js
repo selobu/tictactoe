@@ -102,3 +102,89 @@ export function revealAllMines(board) {
   }
   return mineIndices;
 }
+
+/* ========== PENALTY SHOOTOUT ========== */
+
+const PENALTY_ROUNDS = 5;
+
+export function createPenaltyState() {
+  return {
+    currentKicker: null,
+    round: 0,
+    choices: {},
+    results: [],
+    scores: {},
+    phase: 'kicking',
+    totalRounds: PENALTY_ROUNDS,
+    lastResult: null,
+  };
+}
+
+export function submitPenaltyChoice(game, playerId, direction) {
+  const state = game.penalty;
+  if (state.phase !== 'kicking') return { valid: false, reason: 'Not in kicking phase' };
+  if (state.choices[playerId]) return { valid: false, reason: 'Already submitted' };
+  if (direction < 1 || direction > 3) return { valid: false, reason: 'Invalid direction' };
+
+  state.choices[playerId] = direction;
+
+  const kickerId = state.currentKicker;
+  const keeperId = kickerId === game.player1.id ? game.player2.id : game.player1.id;
+
+  if (state.choices[kickerId] && state.choices[keeperId]) {
+    const kickerDir = state.choices[kickerId];
+    const keeperDir = state.choices[keeperId];
+    const isGoal = kickerDir !== keeperDir;
+
+    state.round++;
+    if (isGoal) state.scores[kickerId] = (state.scores[kickerId] || 0) + 1;
+
+    state.results.push({
+      round: state.round,
+      kicker: kickerId,
+      kickerDir,
+      keeperDir,
+      isGoal,
+    });
+    state.lastResult = {
+      kicker: kickerId,
+      kickerDir,
+      keeperDir,
+      isGoal,
+    };
+    state.choices = {};
+    state.phase = 'reveal';
+
+    const allDone = state.round >= PENALTY_ROUNDS * 2;
+    if (allDone) state.phase = 'finished';
+
+    return {
+      valid: true,
+      result: state.lastResult,
+      scores: { ...state.scores },
+      round: state.round,
+      phase: state.phase,
+      allDone,
+    };
+  }
+
+  return { valid: true, waiting: true };
+}
+
+export function startNextPenaltyKick(game) {
+  const state = game.penalty;
+  if (state.phase === 'finished') return { valid: false };
+  if (state.phase === 'kicking') return { valid: false, reason: 'Still waiting for choices' };
+
+  const p1Id = game.player1.id;
+  const p2Id = game.player2.id;
+  const lastKicker = state.lastResult?.kicker;
+  const nextKicker = lastKicker === p1Id ? p2Id : p1Id;
+
+  state.currentKicker = nextKicker;
+  state.choices = {};
+  state.phase = 'kicking';
+  state.lastResult = null;
+
+  return { valid: true, currentKicker: nextKicker };
+}

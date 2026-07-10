@@ -1,7 +1,7 @@
 let matchIdCounter = 0;
 let botIdCounter = 0;
 
-import { createMineBoard as createMineBoardData } from './gameLogic.js';
+import { createMineBoard as createMineBoardData, createPenaltyState } from './gameLogic.js';
 
 const BOT_AVATARS = ['boo', 'shark', 'koopa'];
 
@@ -100,6 +100,12 @@ export function createGameForSeries(tournament, series, gameType = 'tictactoe') 
     game.turnIndex = 0;
     game.lastOpponentScore = 0;
     game.moves = [];
+  } else if (gameType === 'penalty') {
+    game.penalty = createPenaltyState();
+    game.penalty.currentKicker = p1.id;
+    game.penalty.scores = { [p1.id]: 0, [p2.id]: 0 };
+    game.scores = { [p1.id]: 0, [p2.id]: 0 };
+    game.currentTurn = p1.id;
   } else {
     game.board = Array(9).fill(null);
     game.currentTurn = p1.id;

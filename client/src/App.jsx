@@ -4,6 +4,7 @@ import Lobby from './components/Lobby';
 import WaitingRoom from './components/WaitingRoom';
 import GameBoard from './components/GameBoard';
 import MineBoard from './components/MineBoard';
+import PenaltyBoard from './components/PenaltyBoard';
 import ChampionScreen from './components/ChampionScreen';
 import RoundResults from './components/RoundResults';
 import TimerClock from './components/TimerClock';
@@ -47,6 +48,10 @@ export default function App() {
   const [safePressIndex, setSafePressIndex] = useState(-1);
   const [boardVersion, setBoardVersion] = useState(0);
   const [mineHitLock, setMineHitLock] = useState(false);
+  const [penaltyLastResult, setPenaltyLastResult] = useState(null);
+  const [penaltyPhase, setPenaltyPhase] = useState('kicking');
+  const [penaltyRound, setPenaltyRound] = useState(0);
+  const [penaltyKickIndex, setPenaltyKickIndex] = useState(0);
 
   useEffect(() => {
     window.addEventListener('beforeunload', () => {
@@ -140,6 +145,36 @@ export default function App() {
       setMineHitLock(false);
       setSafePressIndex(-1);
       setBoardVersion(v => v + 1);
+    });
+
+    socket.on('penalty-result', (data) => {
+      setCurrentMatch((prev) => {
+        if (!prev || prev.id !== data.matchId) return prev;
+        return { ...prev, penalty: { ...prev.penalty, lastResult: data.result, phase: data.phase, round: data.round } };
+      });
+      if (data.scores) setMineScores(data.scores);
+      setPenaltyLastResult(data.result);
+      setPenaltyPhase(data.phase);
+      setPenaltyRound(data.round);
+      if (data.result?.isGoal) {
+        playSafePressSound();
+        setTimeout(() => playSafePressSound(), 200);
+      } else {
+        playExplosionSound();
+      }
+    });
+
+    socket.on('penalty-next', (data) => {
+      setCurrentMatch((prev) => {
+        if (!prev || prev.id !== data.matchId) return prev;
+        return { ...prev, currentTurn: data.currentKicker };
+      });
+      setPenaltyLastResult(null);
+      setPenaltyKickIndex(k => k + 1);
+    });
+
+    socket.on('penalty-waiting', () => {
+      // choice submitted, waiting for opponent
     });
 
     socket.on('timer-update', (data) => {
@@ -253,6 +288,9 @@ export default function App() {
       socket.off('round-results');
       socket.off('mine-board-update');
       socket.off('mine-hit');
+      socket.off('penalty-result');
+      socket.off('penalty-next');
+      socket.off('penalty-waiting');
       socket.off('player-abandoned');
     };
   }, []);
@@ -309,6 +347,12 @@ export default function App() {
   const handleMakeMove = useCallback((cellIndex) => {
     if (currentMatch) {
       socket.emit('make-move', { matchId: currentMatch.id, cellIndex });
+    }
+  }, [currentMatch]);
+
+  const handlePenaltyChoice = useCallback((direction) => {
+    if (currentMatch) {
+      socket.emit('penalty-choice', { matchId: currentMatch.id, direction });
     }
   }, [currentMatch]);
 
@@ -429,7 +473,23 @@ export default function App() {
                 <div className="cooldown-fill" style={{ animationDuration: `${Math.max(0, currentMatch.moveCooldownUntil - Date.now())}ms` }} />
               </div>
             )}
-            {(gameType === 'minefinder' && currentMatch.type !== 'tictactoe') ? (
+            {(gameType === 'penalty') ? (
+              <PenaltyBoard
+                player1={currentMatch.player1}
+                player2={currentMatch.player2}
+                currentTurn={currentMatch.currentTurn}
+                myId={playerId}
+                isMyTurn={currentMatch.status === 'playing'}
+                disabled={currentMatch.status !== 'playing'}
+                onChoice={handlePenaltyChoice}
+                lastResult={penaltyLastResult}
+                showWait={!isMyTurnReady && currentMatch.currentTurn === playerId}
+                scores={mineScores}
+                round={penaltyRound}
+                phase={penaltyPhase}
+                kickIndex={penaltyKickIndex}
+              />
+            ) : (gameType === 'minefinder' && currentMatch.type !== 'tictactoe') ? (
               <MineBoard key={`${currentMatch.id}-v${boardVersion}`}
                 board={currentMatch.board}
                 onCellClick={handleMakeMove}

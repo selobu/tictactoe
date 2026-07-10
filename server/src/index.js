@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createBoard, makeMove, createMineBoard, revealMineCell, revealAllMines } from './gameLogic.js';
+import { createBoard, makeMove, createMineBoard, revealMineCell, revealAllMines, submitPenaltyChoice, startNextPenaltyKick } from './gameLogic.js';
 import {
   createTournament, startRound, createGameForSeries, finalizeSeries,
   checkRoundComplete, addCoins, penalizeDraw, getMostCoinsPlayer, getRoundResults,
@@ -34,7 +34,7 @@ const TIME_LIMIT = 30000;
 const MOVE_COOLDOWN = 800;
 const MAX_SPEED_POINTS = 50;
 const INITIAL_COINS = 1000;
-const BET_TIME_LIMIT = 60000;
+const BET_TIME_LIMIT = 40000;
 
 const THEMES = [
   { x: '#f7971e', o: '#00b09b', bg1: '#0f0c29', bg2: '#302b63', glow: '#ffd200' },
@@ -221,9 +221,11 @@ function startGame(roomId) {
   const game = createGameForSeries(room.tournament, series, room.gameType || 'tictactoe');
   if (!game) return;
 
-  initMatchTimer(game);
+  if (game.type !== 'penalty') {
+    initMatchTimer(game);
+    startTimerInterval(roomId);
+  }
   io.to(roomId).emit('match-start', { match: game, series });
-  startTimerInterval(roomId);
   scheduleBotMove(room, roomId, game);
 }
 
@@ -808,6 +810,83 @@ io.on('connection', (socket) => {
       moveCooldownUntil: game.moveCooldownUntil,
     });
     scheduleBotMove(room, currentRoom, game);
+  });
+
+  socket.on('penalty-choice', ({ matchId, direction }) => {
+    const room = rooms.get(currentRoom);
+    if (!room || !room.tournament) return;
+    const game = room.tournament.currentGame;
+    if (!game || game.id !== matchId || game.status !== 'playing' || game.type !== 'penalty') return;
+
+    if (direction !== 1 && direction !== 2 && direction !== 3) return;
+    const result = submitPenaltyChoice(game, socket.id, direction);
+    if (!result.valid) return;
+
+    if (result.waiting) {
+      socket.emit('penalty-waiting', { matchId: game.id });
+      return;
+    }
+
+    io.to(currentRoom).emit('penalty-result', {
+      matchId: game.id,
+      result: result.result,
+      scores: result.scores,
+      round: result.round,
+      phase: result.phase,
+      allDone: result.allDone,
+    });
+
+    if (result.allDone) {
+      game.status = 'finished';
+      stopTimerInterval(currentRoom);
+      const p1Score = result.scores[game.player1.id] || 0;
+      const p2Score = result.scores[game.player2.id] || 0;
+      const winnerId = p1Score > p2Score ? game.player1.id : (p2Score > p1Score ? game.player2.id : null);
+      const winnerPlayer = winnerId ? room.tournament.players.find((p) => p.id === winnerId) : null;
+      const draw = !winnerId;
+
+      io.to(currentRoom).emit('match-result', {
+        match: game, winner: winnerPlayer, draw,
+        winCombo: null, scores: result.scores, tournament: room.tournament,
+      });
+
+      const series = room.tournament.currentSeries;
+      if (series) {
+        if (winnerId) {
+          if (winnerId === series.player1.id) series.p1wins++;
+          else series.p2wins++;
+        } else {
+          penalizeDraw(room.tournament, game.player1.id, game.player2.id);
+        }
+        const fsResult = finalizeSeries(room.tournament, series);
+        if (fsResult.winner) {
+          distributePot(room.tournament, series, fsResult.winner.id);
+        } else {
+          refundBets(room.tournament, series);
+        }
+        io.to(currentRoom).emit('series-result', {
+          seriesId: series.id,
+          winner: fsResult.winner,
+          loserId: fsResult.loserId,
+          p1wins: series.p1wins,
+          p2wins: series.p2wins,
+        });
+        setTimeout(() => {
+          io.to(currentRoom).emit('tournament-update', { tournament: room.tournament });
+          launchNextSeries(currentRoom);
+        }, 3000);
+      }
+    } else {
+      setTimeout(() => {
+        startNextPenaltyKick(game);
+        if (game.penalty.phase === 'kicking') {
+          io.to(currentRoom).emit('penalty-next', {
+            matchId: game.id,
+            currentKicker: game.penalty.currentKicker,
+          });
+        }
+      }, 2500);
+    }
   });
 
   socket.on('leave-room', () => {

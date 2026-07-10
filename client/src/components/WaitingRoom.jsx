@@ -60,6 +60,14 @@ export default function WaitingRoom({ players, playerId, tournament, onStart }) 
                 <span className="game-type-name">Mine Finder</span>
                 <span className="game-type-desc">10x10 — 2 turns per pair</span>
               </button>
+              <button
+                className={`game-type-btn ${gameType === 'penalty' ? 'selected' : ''}`}
+                onClick={() => setGameType('penalty')}
+              >
+                <span className="game-type-icon">⚽🥅</span>
+                <span className="game-type-name">Penalty Shootout</span>
+                <span className="game-type-desc">5 rounds — pick your shot</span>
+              </button>
             </div>
           </div>
         )}
