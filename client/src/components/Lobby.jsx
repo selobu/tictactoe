@@ -70,6 +70,10 @@ export default function Lobby({ onJoin, joining, error }) {
               ))}
             </div>
           </div>
+          {error && <div className="form-error">{error}</div>}
+          <button type="submit" className="join-btn" disabled={joining}>
+            {joining ? <span className="btn-loading">Joining...</span> : <span>Join Room</span>}
+          </button>
           <div className="form-group">
             <label>Room Code</label>
             <div className="room-input-group">
@@ -87,10 +91,6 @@ export default function Lobby({ onJoin, joining, error }) {
               </button>
             </div>
           </div>
-          {error && <div className="form-error">{error}</div>}
-          <button type="submit" className="join-btn" disabled={joining}>
-            {joining ? <span className="btn-loading">Joining...</span> : <span>Join Room</span>}
-          </button>
         </form>
       </div>
     </div>
