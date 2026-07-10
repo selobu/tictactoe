@@ -1,6 +1,23 @@
 let matchIdCounter = 0;
+let botIdCounter = 0;
 
 import { createMineBoard as createMineBoardData } from './gameLogic.js';
+
+const BOT_AVATARS = ['boo', 'shark', 'koopa'];
+
+function createBotPlayer() {
+  botIdCounter++;
+  const avatar = BOT_AVATARS[(botIdCounter - 1) % BOT_AVATARS.length];
+  return {
+    id: `bot_${botIdCounter}`,
+    name: `Bot ${botIdCounter}`,
+    avatar,
+    coins: 500,
+    eliminated: false,
+    inMatch: false,
+    isBot: true,
+  };
+}
 
 export function createTournament(players) {
   return {
@@ -28,7 +45,7 @@ function shuffle(arr) {
 }
 
 export function startRound(tournament) {
-  const active = tournament.players.filter((p) => !p.eliminated);
+  const active = tournament.players.filter((p) => !p.eliminated && !p.isBot);
   if (active.length <= 1) {
     if (active.length === 1) {
       tournament.champion = active[0];
@@ -43,7 +60,9 @@ export function startRound(tournament) {
     pairs.push([shuffled[i], shuffled[i + 1]]);
   }
   if (shuffled.length % 2 !== 0) {
-    pairs.push([shuffled[shuffled.length - 1], null]);
+    const bot = createBotPlayer();
+    tournament.players.push(bot);
+    pairs.push([shuffled[shuffled.length - 1], bot]);
   }
 
   tournament.seriesQueue = pairs;

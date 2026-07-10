@@ -121,11 +121,11 @@ export default function App() {
       if (data.scores) setMineScores(data.scores);
       setCurrentMatch((prev) => {
         if (!prev || prev.id !== data.matchId) return prev;
-        return { ...prev, currentTurn: data.currentTurn, moveCooldownUntil: data.moveCooldownUntil };
+        return { ...prev, board: data.board, currentTurn: data.currentTurn, moveCooldownUntil: data.moveCooldownUntil };
       });
       if (data.cellIndex >= 0) {
         setMineHitIndex(data.cellIndex);
-        setTimeout(() => setMineHitIndex(-1), 1000);
+        setTimeout(() => setMineHitIndex(-1), 2500);
         playExplosionSound();
       }
     });

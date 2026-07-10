@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import AvatarDisplay from './AvatarDisplay';
+import { playCountdownTick } from '../utils/marioMusic';
 
 export default function BettingPhase({
   match, player1, player2, playerId, players,
@@ -18,7 +19,7 @@ export default function BettingPhase({
   const myBet = myBetObj ? (typeof myBetObj === 'number' ? myBetObj : myBetObj.amount) : null;
   const isParticipant = player1.id === playerId || player2.id === playerId;
   const allEntries = Object.entries(bets || {});
-  const pot = allEntries.reduce((s, [_, b]) => s + (typeof b === 'number' ? b : (b.amount || 0)), 0);
+  const pot = Math.floor(allEntries.reduce((s, [_, b]) => s + (typeof b === 'number' ? b : (b.amount || 0)), 0) * 1.3);
 
   const p1BetObj = bets?.[player1.id];
   const p1BetAmount = p1BetObj ? (typeof p1BetObj === 'number' ? p1BetObj : p1BetObj.amount) : null;
@@ -56,9 +57,15 @@ export default function BettingPhase({
     }
   }, [remaining]);
 
+  useEffect(() => {
+    if (remaining <= 0 || remaining > 5000) return;
+    const tick = setTimeout(() => playCountdownTick(), 0);
+    return () => clearTimeout(tick);
+  }, [Math.floor(remaining / 1000)]);
+
   const seconds = Math.ceil(remaining / 1000);
   const timerPct = totalTime > 0 ? (remaining / totalTime) * 100 : 0;
-  const maxSafeBet = Math.min(maxBet, 500);
+  const maxSafeBet = maxBet;
 
   function handlePlaceBet(skipOn) {
     if (placed) return;
@@ -169,7 +176,8 @@ export default function BettingPhase({
               />
               <button className="bet-shortcut" onClick={() => setBetAmount(Math.min(100, maxBet))}>100</button>
               <button className="bet-shortcut" onClick={() => setBetAmount(Math.min(500, maxBet))}>500</button>
-              <button className="bet-shortcut all-in" onClick={() => setBetAmount(maxBet)}>ALL IN</button>
+              <button className="bet-shortcut" onClick={() => setBetAmount(Math.min(1000, maxBet))}>1k</button>
+              <button className="bet-shortcut all-in" onClick={() => setBetAmount(maxBet)}>MAX</button>
             </div>
           </div>
           <button className="place-bet-btn" onClick={() => handlePlaceBet(player1.id === playerId ? player1.id : player2.id)} disabled={placed}>
@@ -218,7 +226,8 @@ export default function BettingPhase({
                   />
                   <button className="bet-shortcut" onClick={() => setBetAmount(Math.min(100, maxBet))}>100</button>
                   <button className="bet-shortcut" onClick={() => setBetAmount(Math.min(500, maxBet))}>500</button>
-                  <button className="bet-shortcut all-in" onClick={() => setBetAmount(maxBet)}>ALL IN</button>
+                  <button className="bet-shortcut" onClick={() => setBetAmount(Math.min(1000, maxBet))}>1k</button>
+                  <button className="bet-shortcut all-in" onClick={() => setBetAmount(maxBet)}>MAX</button>
                 </div>
               </div>
               <button className="place-bet-btn" onClick={() => handlePlaceBet()} disabled={placed}>

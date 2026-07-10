@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createBoard, makeMove, createMineBoard, revealMineCell } from './gameLogic.js';
+import { createBoard, makeMove, createMineBoard, revealMineCell, revealAllMines } from './gameLogic.js';
 import {
   createTournament, startRound, createGameForSeries, finalizeSeries,
   checkRoundComplete, addCoins, penalizeDraw, getMostCoinsPlayer, getRoundResults,
@@ -224,6 +224,7 @@ function startGame(roomId) {
   initMatchTimer(game);
   io.to(roomId).emit('match-start', { match: game, series });
   startTimerInterval(roomId);
+  scheduleBotMove(room, roomId, game);
 }
 
 function launchNextSeries(roomId) {
@@ -232,16 +233,6 @@ function launchNextSeries(roomId) {
 
   while (room.tournament.seriesIndex < room.tournament.seriesQueue.length) {
     const pair = room.tournament.seriesQueue[room.tournament.seriesIndex];
-    if (!pair || !pair[1]) {
-      const byePlayer = pair && pair[0] ? room.tournament.players.find(p => p.id === pair[0].id) : null;
-      if (byePlayer) {
-        for (const p of room.tournament.players) {
-          if (p.id !== byePlayer.id && !p.eliminated) p.eliminated = true;
-        }
-      }
-      room.tournament.seriesIndex++;
-      continue;
-    }
     const p1 = room.tournament.players.find(p => p.id === pair[0].id);
     const p2 = room.tournament.players.find(p => p.id === pair[1].id);
     if (!p1 || !p2 || p1.eliminated || p2.eliminated) {
@@ -408,6 +399,96 @@ function scheduleNextGame(roomId) {
   setTimeout(() => startGame(roomId), 4000);
 }
 
+function isBotPlayer(playerId) {
+  return typeof playerId === 'string' && playerId.startsWith('bot_');
+}
+
+function scheduleBotMove(room, roomId, game) {
+  if (!isBotPlayer(game.currentTurn)) return;
+  const delay = game.type === 'minefinder' ? 1500 : 800;
+  setTimeout(() => {
+    const r = rooms.get(roomId);
+    if (!r || !r.tournament || r.tournament.currentGame?.id !== game.id || game.status !== 'playing') return;
+    if (game.currentTurn !== game.player1.id && game.currentTurn !== game.player2.id) return;
+    if (!isBotPlayer(game.currentTurn)) return;
+
+    if (game.type === 'minefinder') {
+      const { cells } = game.board;
+      const unrevealed = [];
+      for (let i = 0; i < cells.length; i++) {
+        if (!cells[i].revealed) unrevealed.push(i);
+      }
+      if (unrevealed.length === 0) return;
+      const pick = unrevealed[Math.floor(Math.random() * unrevealed.length)];
+      const result = revealMineCell(game, pick);
+      if (!result.valid) return;
+
+      game.moves.push({ playerId: game.currentTurn, cellIndex: pick });
+
+      if (result.mine) {
+        revealAllMines(game.board);
+        io.to(roomId).emit('mine-hit', {
+          matchId: game.id, board: game.board, cellIndex: pick,
+          scores: game.scores, currentTurn: game.currentTurn, moveCooldownUntil: game.moveCooldownUntil,
+        });
+        setTimeout(() => endMineTurn(room, roomId, game, 'mine'), 2500);
+        return;
+      }
+
+      game.turnScores[game.currentTurn] = (game.turnScores[game.currentTurn] || 0) + 1;
+      game.scores[game.currentTurn] = (game.scores[game.currentTurn] || 0) + 1;
+
+      io.to(roomId).emit('mine-board-update', {
+        matchId: game.id, board: game.board, cellIndex: pick,
+        scores: game.scores, currentTurn: game.currentTurn, moveCooldownUntil: game.moveCooldownUntil,
+      });
+      scheduleBotMove(room, roomId, game);
+    } else {
+      const board = game.board;
+      const avail = [];
+      for (let i = 0; i < board.length; i++) {
+        if (board[i] === null) avail.push(i);
+      }
+      if (avail.length === 0) return;
+      const pick = avail[Math.floor(Math.random() * avail.length)];
+      const botMark = game.player1.id === game.currentTurn ? 'X' : 'O';
+      const result = makeMove(board, pick, botMark);
+      if (!result.valid) return;
+
+      game.board = result.board;
+      game.moves.push({ playerId: game.currentTurn, cellIndex: pick, mark: botMark, speedPoints: 0 });
+
+      if (result.win || result.draw) {
+        game.status = 'finished';
+        stopTimerInterval(roomId);
+        switchTurn(game);
+
+        const winnerPlayer = result.win ? room.tournament.players.find((p) => p.id === game.currentTurn) : null;
+        io.to(roomId).emit('match-result', {
+          match: game, winner: winnerPlayer, draw: result.draw,
+          winCombo: result.winCombo, tournament: room.tournament,
+        });
+
+        if (result.win) {
+          const loserId = game.player1.id === game.currentTurn ? game.player2.id : game.player1.id;
+          handleAfterGame(roomId, game, game.currentTurn, loserId, false);
+        } else {
+          penalizeDraw(room.tournament, game.player1.id, game.player2.id);
+          handleAfterGame(roomId, game, null, null, true);
+        }
+        return;
+      }
+
+      switchTurn(game);
+      io.to(roomId).emit('board-update', {
+        matchId: game.id, board: game.board,
+        currentTurn: game.currentTurn, moveCooldownUntil: game.moveCooldownUntil,
+      });
+      scheduleBotMove(room, roomId, game);
+    }
+  }, delay);
+}
+
 function endMineTurn(room, roomId, game, reason) {
   const currentPlayerId = game.currentTurn;
   const opponentId = game.player1.id === currentPlayerId ? game.player2.id : game.player1.id;
@@ -441,6 +522,7 @@ function endMineTurn(room, roomId, game, reason) {
     lastOpponentScore: game.lastOpponentScore,
     reason,
   });
+  scheduleBotMove(room, roomId, game);
 }
 
 function endMineFinderGame(room, roomId, game) {
@@ -457,12 +539,31 @@ function endMineFinderGame(room, roomId, game) {
     winCombo: null, scores: game.scores, tournament: room.tournament,
   });
 
-  if (winnerId) {
-    const loserId = winnerId === game.player1.id ? game.player2.id : game.player1.id;
-    handleAfterGame(roomId, game, winnerId, loserId, false);
-  } else {
-    penalizeDraw(room.tournament, game.player1.id, game.player2.id);
-    handleAfterGame(roomId, game, null, null, true);
+  const series = room.tournament.currentSeries;
+  if (series) {
+    if (winnerId) {
+      if (winnerId === series.player1.id) series.p1wins++;
+      else series.p2wins++;
+    } else {
+      penalizeDraw(room.tournament, game.player1.id, game.player2.id);
+    }
+    const result = finalizeSeries(room.tournament, series);
+    if (result.winner) {
+      distributePot(room.tournament, series, result.winner.id);
+    } else {
+      refundBets(room.tournament, series);
+    }
+    io.to(roomId).emit('series-result', {
+      seriesId: series.id,
+      winner: result.winner,
+      loserId: result.loserId,
+      p1wins: series.p1wins,
+      p2wins: series.p2wins,
+    });
+    setTimeout(() => {
+      io.to(roomId).emit('tournament-update', { tournament: room.tournament });
+      launchNextSeries(roomId);
+    }, 3000);
   }
 }
 
@@ -551,8 +652,14 @@ io.on('connection', (socket) => {
     }
     if (!avatar || room.players.some((p) => p.avatar === avatar)) avatar = getNextAvatar();
 
+    const sanitized = playerName
+      .replace(/[<>&"']/g, '')
+      .replace(/[\x00-\x1f]/g, '')
+      .trim()
+      .slice(0, 20);
+
     const player = {
-      id: socket.id, name: playerName, avatar, connected: true,
+      id: socket.id, name: sanitized || 'Player', avatar, connected: true,
       inMatch: false, eliminated: false,
       isHost: room.players.length === 0, coins: INITIAL_COINS,
     };
@@ -637,25 +744,21 @@ io.on('connection', (socket) => {
       game.moves.push({ playerId: socket.id, cellIndex });
 
       if (result.mine) {
+        revealAllMines(game.board);
         io.to(currentRoom).emit('mine-hit', {
           matchId: game.id,
+          board: game.board,
           cellIndex: result.cellIndex,
           scores: game.scores,
           currentTurn: game.currentTurn,
           moveCooldownUntil: game.moveCooldownUntil,
         });
-        setTimeout(() => endMineTurn(room, currentRoom, game, 'mine'), 1200);
+        setTimeout(() => endMineTurn(room, currentRoom, game, 'mine'), 2500);
         return;
       }
 
       game.turnScores[socket.id] = (game.turnScores[socket.id] || 0) + 1;
       game.scores[socket.id] = (game.scores[socket.id] || 0) + 1;
-
-      const turnNum = game.playerTurns[socket.id] || 0;
-      if (turnNum >= 1 && game.turnScores[socket.id] > game.lastOpponentScore) {
-        endMineTurn(room, currentRoom, game, 'beat');
-        return;
-      }
 
       io.to(currentRoom).emit('mine-board-update', {
         matchId: game.id,
@@ -704,6 +807,7 @@ io.on('connection', (socket) => {
       currentTurn: game.currentTurn,
       moveCooldownUntil: game.moveCooldownUntil,
     });
+    scheduleBotMove(room, currentRoom, game);
   });
 
   socket.on('leave-room', () => {

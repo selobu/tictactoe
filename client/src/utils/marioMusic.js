@@ -24,7 +24,7 @@ const N = {
   Fs4: 369.99, C5: 523.25, D5: 587.33, E5: 659.25,
   Bb4: 466.16, A3: 220.00, B3: 246.94, E3: 164.81,
   Fs3: 185.00, D3: 146.83, A2: 110.00, E2: 82.41,
-  Cs5: 554.37, R: null,
+  Cs5: 554.37, C3: 130.81, G2: 98.00, R: null,
 };
 
 const T = 0.13;
@@ -149,4 +149,36 @@ export function playExplosionSound() {
   osc.stop(start + 0.5);
   noise.start(start);
   noise.stop(start + 0.5);
+
+  playMarioDeathSound();
+}
+
+export function playMarioDeathSound() {
+  const ctx = getCtx();
+  if (ctx.state === 'suspended') ctx.resume();
+  const start = ctx.currentTime + 0.15;
+  const deathMelody = [
+    [N.E4, 0.18], [N.C4, 0.15], [N.G3, 0.28],
+    [N.E3, 0.18], [N.C3, 0.15], [N.G2, 0.5],
+  ];
+  deathMelody.forEach(([freq, dur], i) => {
+    if (freq) note(freq, dur, start + deathMelody.slice(0, i).reduce((s, [, d]) => s + d, 0), ctx, 'square', 0.1);
+  });
+}
+
+export function playCountdownTick() {
+  const ctx = getCtx();
+  if (ctx.state === 'suspended') ctx.resume();
+  const start = ctx.currentTime + 0.01;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.1, start);
+  g.gain.exponentialRampToValueAtTime(0.001, start + 0.08);
+  const osc = ctx.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(880, start);
+  osc.frequency.setValueAtTime(660, start + 0.04);
+  osc.connect(g);
+  g.connect(ctx.destination);
+  osc.start(start);
+  osc.stop(start + 0.08);
 }

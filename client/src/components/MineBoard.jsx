@@ -70,6 +70,7 @@ export default function MineBoard({
       >
         {cells.map((cell) => {
           let cls = 'mine-cell hidden';
+          let content = null;
           if (mineHitIndex === cell.index) {
             cls += ' mine-explode';
           } else if (safePressIndex === cell.index) {
@@ -77,13 +78,19 @@ export default function MineBoard({
           } else if (pressedCells.has(cell.index) || cell.revealed) {
             cls += ' pressed';
           }
+          if (cell.revealed && cell.mine) {
+            content = <span className="mine-icon">💣</span>;
+          } else if (cell.revealed && cell.adjacent > 0) {
+            const colors = ['', '#3498db', '#2ecc71', '#e74c3c', '#9b59b6', '#f39c12', '#1abc9c', '#e67e22', '#95a5a6'];
+            content = <span className="mine-adj" style={{ color: colors[cell.adjacent] || '#3498db' }}>{cell.adjacent}</span>;
+          }
           return (
             <button
               key={cell.index}
               className={cls}
               onClick={() => handleClick(cell.index)}
               disabled={disabled || pressedCells.has(cell.index)}
-            />
+            >{content}</button>
           );
         })}
       </div>

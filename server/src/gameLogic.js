@@ -90,3 +90,15 @@ export function revealMineCell(game, cellIndex) {
     cellIndex,
   };
 }
+
+export function revealAllMines(board) {
+  const { cells } = board;
+  const mineIndices = [];
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i].mine) {
+      cells[i].revealed = true;
+      mineIndices.push(i);
+    }
+  }
+  return mineIndices;
+}
