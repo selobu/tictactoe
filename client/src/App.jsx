@@ -310,6 +310,7 @@ export default function App() {
       setBettingPlayer2(data.player2);
       setBettingEndAt(data.bettingEndAt);
       setBets({});
+      if (data.players) setPlayers(data.players);
       setMessage(data.round ? `Round ${data.round} Betting` : 'Betting open!');
       transitionTo('betting');
     });
@@ -336,10 +337,13 @@ export default function App() {
 
     socket.on('series-result', (data) => {
       setPlayers(prev => {
-        const winner = prev.find(p => p.id === data.winner?.id);
-        const name = winner?.name || data.winner?.name || 'Someone';
-        const score = `${data.p1wins} - ${data.p2wins}`;
-        setMessage(`${name} wins the series ${score}!`);
+        if (data.isDraw) {
+          setMessage(`Series draw! ${data.p1wins} - ${data.p2wins}`);
+        } else {
+          const winner = prev.find(p => p.id === data.winner?.id);
+          const name = winner?.name || data.winner?.name || 'Someone';
+          setMessage(`${name} wins the series ${data.p1wins} - ${data.p2wins}!`);
+        }
         return prev;
       });
     });

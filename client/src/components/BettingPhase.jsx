@@ -13,8 +13,10 @@ export default function BettingPhase({
   const [totalTime, setTotalTime] = useState(() => Math.max(1, bettingEndAt - Date.now()));
   const [betOn, setBetOn] = useState(null);
 
-  const currentPlayer = tournament?.players?.find((p) => p.id === playerId);
-  const maxBet = currentPlayer?.coins ?? 0;
+  const currentPlayer = tournament?.players?.find((p) => p.id === playerId)
+    || players?.find((p) => p.id === playerId);
+  const maxBet = currentPlayer?.coins ??
+    (player1.id === playerId ? player1.coins : player2.id === playerId ? player2.coins : 0) ?? 0;
   const myBetObj = bets?.[playerId] ?? null;
   const myBet = myBetObj ? (typeof myBetObj === 'number' ? myBetObj : myBetObj.amount) : null;
   const isParticipant = player1.id === playerId || player2.id === playerId;

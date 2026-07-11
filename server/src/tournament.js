@@ -125,15 +125,18 @@ export function createGameForSeries(tournament, series, gameType = 'tictactoe') 
 }
 
 export function finalizeSeries(tournament, series) {
-  let seriesWinnerId;
-  if (series.p1wins > series.p2wins) {
+  let seriesWinnerId, seriesLoserId;
+  const isDraw = series.p1wins === series.p2wins;
+
+  if (isDraw) {
+    seriesWinnerId = null;
+    seriesLoserId = null;
+  } else if (series.p1wins > series.p2wins) {
     seriesWinnerId = series.player1.id;
-  } else if (series.p2wins > series.p1wins) {
-    seriesWinnerId = series.player2.id;
+    seriesLoserId = series.player2.id;
   } else {
-    const tp1 = tournament.players.find((p) => p.id === series.player1.id);
-    const tp2 = tournament.players.find((p) => p.id === series.player2.id);
-    seriesWinnerId = (tp1.coins || 0) >= (tp2.coins || 0) ? series.player1.id : series.player2.id;
+    seriesWinnerId = series.player2.id;
+    seriesLoserId = series.player1.id;
   }
 
   series.winner = seriesWinnerId;
@@ -144,11 +147,12 @@ export function finalizeSeries(tournament, series) {
   if (p1) p1.inMatch = false;
   if (p2) p2.inMatch = false;
 
-  const seriesLoserId = series.player1.id === seriesWinnerId ? series.player2.id : series.player1.id;
-  const loser = tournament.players.find((p) => p.id === seriesLoserId);
-  if (loser) loser.eliminated = true;
+  if (seriesLoserId) {
+    const loser = tournament.players.find((p) => p.id === seriesLoserId);
+    if (loser) loser.eliminated = true;
+  }
 
-  const winner = tournament.players.find((p) => p.id === seriesWinnerId);
+  const winner = seriesWinnerId ? tournament.players.find((p) => p.id === seriesWinnerId) : null;
 
   tournament.currentGame = null;
   tournament.completedSeries.push({
@@ -159,10 +163,11 @@ export function finalizeSeries(tournament, series) {
     p2wins: series.p2wins,
     winnerId: seriesWinnerId,
     seriesId: series.id,
+    isDraw,
   });
   tournament.seriesIndex++;
 
-  return { winner, loserId: seriesLoserId };
+  return { winner, loserId: seriesLoserId, isDraw };
 }
 
 export function checkRoundComplete(tournament) {

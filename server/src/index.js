@@ -376,6 +376,22 @@ function refundBets(tournament, series) {
   series.totalPot = 0;
 }
 
+function distributePotToAll(tournament, series) {
+  if (!series.totalPot || !series.bets) return;
+  const allEntries = Object.entries(series.bets);
+  const totalBets = allEntries.reduce((s, [_, b]) => s + b.amount, 0);
+  if (totalBets <= 0) return;
+  const boostedPot = Math.floor(series.totalPot * 1.3);
+  for (const [bettorId, bet] of allEntries) {
+    const tp = tournament.players.find(p => p.id === bettorId);
+    if (tp) {
+      const share = Math.floor(boostedPot * bet.amount / totalBets);
+      tp.coins += share;
+      tp.bettingProfit = (tp.bettingProfit || 0) + share - bet.amount;
+    }
+  }
+}
+
 function handleAfterGame(roomId, game, winnerId, loserId, isDraw) {
   const room = rooms.get(roomId);
   if (!room || !room.tournament) return;
@@ -412,7 +428,9 @@ function handleAfterGame(roomId, game, winnerId, loserId, isDraw) {
   const result = finalizeSeries(room.tournament, series);
   stopTimerInterval(roomId);
 
-  if (result.winner) {
+  if (result.isDraw) {
+    distributePotToAll(room.tournament, series);
+  } else if (result.winner) {
     distributePot(room.tournament, series, result.winner.id);
   } else {
     refundBets(room.tournament, series);
@@ -424,6 +442,7 @@ function handleAfterGame(roomId, game, winnerId, loserId, isDraw) {
     loserId: result.loserId,
     p1wins: series.p1wins,
     p2wins: series.p2wins,
+    isDraw: !!result.isDraw,
   });
 
   setTimeout(() => {
@@ -743,7 +762,7 @@ function handleDisconnectMatch(room, roomId, playerId) {
 
   if (series && series.status === 'betting') {
     if (series.bettingTimer) clearTimeout(series.bettingTimer);
-    series.status = 'playing';
+    finalizeBetting(roomId, series);
   }
 
   if (game && game.status === 'playing') {
@@ -1190,7 +1209,7 @@ io.on('connection', (socket) => {
 
     if (room.tournament) {
       const activePlayers = room.players.filter((p) => p.connected && !p.eliminated);
-      if (activePlayers.length < 2 && room.tournament.phase !== 'finished' && room.tournament.phase !== 'cancelled') {
+      if (activePlayers.length === 0 && room.tournament.phase !== 'finished' && room.tournament.phase !== 'cancelled') {
         room.tournament.phase = 'cancelled';
         stopTimerInterval(currentRoom);
         io.to(currentRoom).emit('tournament-cancelled', { reason: 'Too many players disconnected' });

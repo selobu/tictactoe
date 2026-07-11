@@ -3030,6 +3030,16 @@ body {
   .champion-card {
     padding: 30px 24px;
   }
+  .game-type-btn {
+    flex: 1 1 100%;
+    padding: 8px;
+  }
+  .game-type-name {
+    font-size: 0.8rem;
+  }
+  .game-type-desc {
+    font-size: 0.65rem;
+  }
 }
 
 /* ========== ROUND RESULTS ========== */
@@ -3209,11 +3219,14 @@ body {
 
 .game-type-options {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  justify-content: center;
 }
 
 .game-type-btn {
-  flex: 1;
+  flex: 1 1 calc(50% - 4px);
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
