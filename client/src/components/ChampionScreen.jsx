@@ -4,7 +4,7 @@ import AvatarDisplay from './AvatarDisplay';
 const COLORS = ['#f7971e', '#ffd200', '#ff6b6b', '#48dbfb', '#ff9ff3', '#54a0ff', '#5f27cd', '#01a3a4', '#f368e0', '#ff9f43'];
 const SHAPES = ['●', '■', '▲', '★', '♦', '♥'];
 
-export default function ChampionScreen({ champion, players, onPlayAgain, runnerUp, mostCoins, bestBettor }) {
+export default function ChampionScreen({ champion, coChampion, players, onPlayAgain, runnerUp, mostCoins, bestBettor }) {
   const particles = useMemo(() =>
     Array.from({ length: 60 }, (_, i) => ({
       id: i,
@@ -46,17 +46,28 @@ export default function ChampionScreen({ champion, players, onPlayAgain, runnerU
         ))}
       </div>
       <div className="champion-content">
-        <div className="champion-card">
+        <div className={`champion-card${coChampion ? ' co-champion-card' : ''}`}>
           <div className="trophy">🏆</div>
           <div className="champion-avatar"><AvatarDisplay character={champion.avatar} size={64} /></div>
           <h2>{champion.name}</h2>
           <p className="champion-coins">{champion.coins ?? 0} 🪙 coins</p>
-          <p className="champion-title">Champion!</p>
+          <p className="champion-title">{coChampion ? 'Co-Champion!' : 'Champion!'}</p>
+        </div>
+        {coChampion && (
+          <div className="champion-card co-champion-card">
+            <div className="trophy">🏆</div>
+            <div className="champion-avatar"><AvatarDisplay character={coChampion.avatar} size={64} /></div>
+            <h2>{coChampion.name}</h2>
+            <p className="champion-coins">{coChampion.coins ?? 0} 🪙 coins</p>
+            <p className="champion-title">Co-Champion!</p>
+          </div>
+        )}
+        <div className="play-again-wrapper">
           <button className="play-again-btn" onClick={onPlayAgain}>
             Play Again
           </button>
         </div>
-        {runnerUp && !isSame(runnerUp, champion) && (
+        {!coChampion && runnerUp && !isSame(runnerUp, champion) && (
           <div className="runnerup-card">
             <div className="runnerup-badge">🥈</div>
             <div className="runnerup-avatar"><AvatarDisplay character={runnerUp.avatar} size={40} /></div>
@@ -95,7 +106,7 @@ export default function ChampionScreen({ champion, players, onPlayAgain, runnerU
               const medals = ['🥇', '🥈', '🥉'];
               const rank = i + 1;
               return (
-                <li key={p.id} className={`leaderboard-item ${p.id === champion?.id ? 'is-champion' : ''}`}>
+                <li key={p.id} className={`leaderboard-item ${p.id === champion?.id || p.id === coChampion?.id ? 'is-champion' : ''}`}>
                   <span className="leaderboard-rank">{medals[i] || `#${rank}`}</span>
                   <span className="leaderboard-avatar"><AvatarDisplay character={p.avatar} size={24} /></span>
                   <span className="leaderboard-name">{p.name}</span>

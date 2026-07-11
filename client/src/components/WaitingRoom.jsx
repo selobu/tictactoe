@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import AvatarDisplay from './AvatarDisplay';
 
-export default function WaitingRoom({ players, playerId, tournament, onStart }) {
+export default function WaitingRoom({ players, playerId, tournament, onStart, onLeave }) {
   const [gameType, setGameType] = useState('tictactoe');
   const currentPlayer = players.find((p) => p.id === playerId);
   const isHost = currentPlayer?.isHost;
@@ -91,6 +91,7 @@ export default function WaitingRoom({ players, playerId, tournament, onStart }) 
         {!isHost && (
           <p className="waiting-msg">Waiting for host to start the tournament...</p>
         )}
+        <button className="leave-btn" onClick={onLeave}>Leave Room</button>
         {tournament && tournament.phase === 'pairing' && (
           <div className="pairing-animation">
             <span className="pairing-dot" />

@@ -47,6 +47,7 @@ function getPid(room, socketId) {
 
 const TIME_LIMIT = 30000;
 const MOVE_COOLDOWN = 800;
+const FIRST_MOVE_COOLDOWN = 3000;
 const MAX_SPEED_POINTS = 50;
 const INITIAL_COINS = 1000;
 const BET_TIME_LIMIT = 40000;
@@ -112,7 +113,7 @@ function initMatchTimer(game) {
   game.timeP1 = limit;
   game.timeP2 = limit;
   game.turnStartedAt = Date.now();
-  game.moveCooldownUntil = Date.now() + MOVE_COOLDOWN;
+  game.moveCooldownUntil = Date.now() + (game.type === 'tictactoe' ? FIRST_MOVE_COOLDOWN : MOVE_COOLDOWN);
   game.theme = getNextTheme();
 }
 
@@ -135,7 +136,8 @@ function switchTurn(game) {
   }
   game.currentTurn = game.currentTurn === game.player1.id ? game.player2.id : game.player1.id;
   game.turnStartedAt = Date.now();
-  game.moveCooldownUntil = Date.now() + MOVE_COOLDOWN;
+  const isFirstMove = !game.firstMovesDone?.includes(game.currentTurn);
+  game.moveCooldownUntil = Date.now() + (isFirstMove ? FIRST_MOVE_COOLDOWN : MOVE_COOLDOWN);
 }
 
 function calcSpeedPoints(game) {
@@ -333,9 +335,11 @@ function finishTournament(roomId) {
   }
 
   const champ = room.tournament.champion;
+  const coChamp = room.tournament.coChampion;
   let runnerUp = null;
   if (room.tournament.players) {
-    const notChamp = room.tournament.players.filter(p => !champ || p.id !== champ.id);
+    const champIds = [champ?.id, coChamp?.id].filter(Boolean);
+    const notChamp = room.tournament.players.filter(p => !champIds.includes(p.id));
     runnerUp = notChamp.length > 0 ? notChamp[0] : null;
   }
   const richest = getMostCoinsPlayer(room.tournament);
@@ -347,6 +351,7 @@ function finishTournament(roomId) {
 
   io.to(roomId).emit('tournament-end', {
     champion: champ,
+    coChampion: coChamp,
     runnerUp,
     mostCoins: richest,
     bestBettor: bestBettor.length > 0 ? bestBettor : null,
@@ -987,6 +992,9 @@ io.on('connection', (socket) => {
 
     game.board = result.board;
     game.moves.push({ playerId: pid, cellIndex, mark: playerMark, speedPoints });
+    if (game.firstMovesDone && !game.firstMovesDone.includes(pid)) {
+      game.firstMovesDone.push(pid);
+    }
 
     if (result.win || result.draw) {
       game.status = 'finished';

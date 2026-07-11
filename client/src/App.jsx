@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { socket } from './socket';
 import Lobby from './components/Lobby';
 import WaitingRoom from './components/WaitingRoom';
@@ -30,7 +30,6 @@ function getPersistentId() {
 
 export default function App() {
   const [screen, setScreen] = useState('lobby');
-  const screenRef = useRef('lobby');
   const [playerId, setPlayerId] = useState(null);
   const [roomId, setRoomId] = useState(null);
   const [playerName, setPlayerName] = useState('');
@@ -133,12 +132,16 @@ export default function App() {
               transitionTo('betting');
             } else if (res.tournament?.champion) {
               setChampion(res.tournament.champion);
+              setTournament(prev => ({
+                ...prev,
+                champion: res.tournament.champion,
+                coChampion: res.tournament.coChampion,
+                players: res.players || prev.players,
+              }));
               transitionTo('champion');
             } else {
-              if (prevScreenRef.current !== 'lobby') {
-                setScreen('waiting');
-                animateIn();
-              }
+              setScreen('waiting');
+              animateIn();
             }
           } else {
             localStorage.removeItem('ttt-room-id');
@@ -298,6 +301,7 @@ export default function App() {
         mostCoins: data.mostCoins,
         bestBettor: data.bestBettor,
         champion: data.champion,
+        coChampion: data.coChampion,
       }));
       transitionTo('champion');
     });
@@ -343,6 +347,12 @@ export default function App() {
                 transitionTo('game');
               } else if (res.tournament?.champion) {
                 setChampion(res.tournament.champion);
+                setTournament(prev => ({
+                  ...prev,
+                  champion: res.tournament.champion,
+                  coChampion: res.tournament.coChampion,
+                  players: res.players || prev.players,
+                }));
                 transitionTo('champion');
               } else {
                 setScreen('waiting');
@@ -523,6 +533,27 @@ export default function App() {
     setShowEndMatchConfirm(false);
   }, []);
 
+  const handleLeaveRoom = useCallback(() => {
+    socket.emit('leave-room');
+    localStorage.removeItem('ttt-room-id');
+    localStorage.removeItem('ttt-player-name');
+    setPlayerId(null);
+    setRoomId(null);
+    setPlayers([]);
+    setTournament(null);
+    setChampion(null);
+    setCurrentMatch(null);
+    setMessage('');
+    setTimer(null);
+    setTheme(null);
+    setBettingMatch(null);
+    setBettingPlayer1(null);
+    setBettingPlayer2(null);
+    setBets({});
+    setRoundResults(null);
+    setScreen('lobby');
+  }, []);
+
   const handlePlayAgain = useCallback(() => {
     socket.emit('new-tournament');
     setChampion(null);
@@ -591,6 +622,7 @@ export default function App() {
             playerId={playerId}
             tournament={tournament}
             onStart={handleStartTournament}
+            onLeave={handleLeaveRoom}
           />
         )}
 
@@ -762,6 +794,7 @@ export default function App() {
             runnerUp={tournament?.runnerUp}
             mostCoins={tournament?.mostCoins}
             bestBettor={tournament?.bestBettor}
+            coChampion={tournament?.coChampion}
           />
         )}
 

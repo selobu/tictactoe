@@ -114,8 +114,9 @@ export function createGameForSeries(tournament, series, gameType = 'tictactoe') 
     game.scores = { [p1.id]: 0, [p2.id]: 0 };
   } else {
     game.board = Array(9).fill(null);
-    game.currentTurn = p1.id;
+    game.currentTurn = game.gameIndex % 2 === 0 ? p1.id : p2.id;
     game.moves = [];
+    game.firstMovesDone = [];
   }
 
   tournament.matches.push(game);
@@ -174,6 +175,14 @@ export function checkRoundComplete(tournament) {
   if (tournament.seriesIndex >= tournament.seriesQueue.length) {
     const remaining = tournament.players.filter((p) => !p.eliminated);
     tournament.currentSeries = null;
+
+    const lastSeries = tournament.completedSeries?.[tournament.completedSeries.length - 1];
+    if (lastSeries?.isDraw && remaining.length === 2) {
+      tournament.coChampion = remaining[1];
+      tournament.champion = remaining[0];
+      tournament.phase = 'finished';
+      return { finished: true };
+    }
 
     if (remaining.length <= 1) {
       if (remaining.length === 1) tournament.champion = remaining[0];
