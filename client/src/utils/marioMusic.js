@@ -182,3 +182,21 @@ export function playCountdownTick() {
   osc.start(start);
   osc.stop(start + 0.08);
 }
+
+export function playCoinSound() {
+  const ctx = getCtx();
+  if (ctx.state === 'suspended') ctx.resume();
+  const start = ctx.currentTime + 0.02;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.12, start);
+  g.gain.exponentialRampToValueAtTime(0.001, start + 0.25);
+  const osc = ctx.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(988, start);
+  osc.frequency.setValueAtTime(1319, start + 0.06);
+  osc.frequency.setValueAtTime(1568, start + 0.12);
+  osc.connect(g);
+  g.connect(ctx.destination);
+  osc.start(start);
+  osc.stop(start + 0.25);
+}

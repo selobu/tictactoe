@@ -5,6 +5,7 @@ import WaitingRoom from './components/WaitingRoom';
 import GameBoard from './components/GameBoard';
 import MineBoard from './components/MineBoard';
 import PenaltyBoard from './components/PenaltyBoard';
+import PlatformerBoard from './components/PlatformerBoard';
 import ChampionScreen from './components/ChampionScreen';
 import RoundResults from './components/RoundResults';
 import TimerClock from './components/TimerClock';
@@ -52,6 +53,10 @@ export default function App() {
   const [penaltyPhase, setPenaltyPhase] = useState('kicking');
   const [penaltyRound, setPenaltyRound] = useState(0);
   const [penaltyKickIndex, setPenaltyKickIndex] = useState(0);
+  const [platformerState, setPlatformerState] = useState(null);
+  const [platformerFinished, setPlatformerFinished] = useState(false);
+  const [platformerResults, setPlatformerResults] = useState(null);
+  const [platformerLevel, setPlatformerLevel] = useState(null);
 
   useEffect(() => {
     window.addEventListener('beforeunload', () => {
@@ -90,6 +95,12 @@ export default function App() {
       } else {
         setMineScores(null);
         setMineHitIndex(-1);
+      }
+      if (data.match.type === 'platformer') {
+        setPlatformerState(null);
+        setPlatformerFinished(false);
+        setPlatformerResults(null);
+        setPlatformerLevel(data.platformerLevel || null);
       }
       setBoardVersion(0);
       transitionTo('game');
@@ -181,9 +192,18 @@ export default function App() {
       setTimer(data);
     });
 
+    socket.on('platformer-state', (data) => {
+      setPlatformerState(data);
+      if (data.finished) setPlatformerFinished(true);
+    });
+
     socket.on('match-result', (data) => {
       setCurrentMatch(data.match);
       setTournament(data.tournament);
+      if (data.platformerResults) {
+        setPlatformerResults(data.platformerResults);
+        setPlatformerFinished(true);
+      }
       if (data.winCombo) setWinCombo(data.winCombo);
       if (data.winner) {
         setWinner(data.winner);
@@ -292,6 +312,7 @@ export default function App() {
       socket.off('penalty-next');
       socket.off('penalty-waiting');
       socket.off('player-abandoned');
+      socket.off('platformer-state');
     };
   }, []);
 
@@ -433,6 +454,7 @@ export default function App() {
 
         {screen === 'game' && currentMatch && (
           <div className="game-container">
+            {gameType !== 'platformer' && (
             <div className="match-info">
               <div className="players-turn">
                 <TimerClock
@@ -466,7 +488,8 @@ export default function App() {
               </div>
               {message && <div className="message">{message}</div>}
             </div>
-            {!isMyTurnReady && currentMatch.currentTurn === playerId && (
+            )}
+            {gameType !== 'platformer' && !isMyTurnReady && currentMatch.currentTurn === playerId && (
               <div className="cooldown-bar">
                 <div className="cooldown-fill" style={{ animationDuration: `${Math.max(0, currentMatch.moveCooldownUntil - Date.now())}ms` }} />
               </div>
@@ -486,6 +509,16 @@ export default function App() {
                 round={penaltyRound}
                 phase={penaltyPhase}
                 kickIndex={penaltyKickIndex}
+              />
+            ) : (gameType === 'platformer') ? (
+              <PlatformerBoard
+                platformerState={platformerState}
+                platformerLevel={platformerLevel}
+                player1={currentMatch.player1}
+                player2={currentMatch.player2}
+                myId={playerId}
+                finished={platformerFinished}
+                results={platformerResults}
               />
             ) : (gameType === 'minefinder' && currentMatch.type !== 'tictactoe') ? (
               <MineBoard key={`${currentMatch.id}-v${boardVersion}`}

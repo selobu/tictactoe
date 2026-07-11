@@ -956,23 +956,25 @@ body {
 
 .copy-btn {
   margin-left: 8px;
-  padding: 4px 12px;
-  border: 1px solid var(--color-x, #f7971e);
-  background: transparent;
-  color: var(--color-x, #f7971e);
-  border-radius: 4px;
+  padding: 6px 16px;
+  border: 2px solid var(--color-glow, #ffd200);
+  background: color-mix(in srgb, var(--color-glow, #ffd200) 15%, transparent);
+  color: var(--color-glow, #ffd200);
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 700;
   transition: all 0.3s ease;
   position: relative;
   overflow: hidden;
+  text-shadow: 0 0 8px color-mix(in srgb, var(--color-glow, #ffd200) 40%, transparent);
 }
 
 .copy-btn:hover {
-  background: var(--color-x, #f7971e);
+  background: var(--color-glow, #ffd200);
   color: #000;
   transform: scale(1.05);
-  box-shadow: 0 0 20px color-mix(in srgb, var(--color-x, #f7971e) 50%, transparent);
+  box-shadow: 0 0 24px color-mix(in srgb, var(--color-glow, #ffd200) 60%, transparent);
 }
 
 .copy-btn:active {
@@ -2540,11 +2542,14 @@ body {
 
 .bet-input-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  justify-content: center;
 }
 
 .bet-input {
-  flex: 1;
+  flex: 1 1 80px;
+  min-width: 60px;
   padding: 10px 14px;
   border: 1px solid rgba(255,255,255,0.2);
   border-radius: 8px;
@@ -2563,7 +2568,9 @@ body {
 }
 
 .bet-shortcut {
-  padding: 10px 14px;
+  padding: 10px 12px;
+  min-width: 44px;
+  text-align: center;
   border: 1px solid rgba(255,255,255,0.15);
   border-radius: 8px;
   background: rgba(0,0,0,0.35);
@@ -3671,4 +3678,92 @@ body {
   font-size: 0.75rem;
   color: #ccc;
   font-weight: 600;
+}
+
+.platformer-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.platformer-hud {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 960px;
+  max-width: 100%;
+  gap: 12px;
+}
+
+.platformer-player-hud {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0,0,0,0.5);
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+
+.platformer-vs {
+  color: #ffd700;
+  font-size: 1.2rem;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+}
+
+.platformer-player-hud.dead {
+  opacity: 0.4;
+}
+
+.platformer-hud-name {
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.platformer-hud-dist {
+  color: #ffd700;
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin-left: auto;
+}
+
+.platformer-hud-coins {
+  color: #ffd700;
+  font-size: 0.8rem;
+}
+
+.platformer-canvas {
+  border-radius: 12px;
+  border: 2px solid rgba(255,255,255,0.15);
+  max-width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+  background: #5c94fc;
+}
+
+.platformer-controls-hint {
+  color: rgba(255,255,255,0.5);
+  font-size: 0.8rem;
+  padding: 4px 12px;
+  background: rgba(0,0,0,0.3);
+  border-radius: 6px;
+}
+
+.platformer-controls-hint button {
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.2);
+  padding: 2px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.platformer-controls-hint button:hover {
+  background: rgba(255,255,255,0.2);
 }

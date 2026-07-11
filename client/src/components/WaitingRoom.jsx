@@ -68,6 +68,14 @@ export default function WaitingRoom({ players, playerId, tournament, onStart }) 
                 <span className="game-type-name">Penalty Shootout</span>
                 <span className="game-type-desc">5 rounds — pick your shot</span>
               </button>
+              <button
+                className={`game-type-btn ${gameType === 'platformer' ? 'selected' : ''}`}
+                onClick={() => setGameType('platformer')}
+              >
+                <span className="game-type-icon">🏃🍄</span>
+                <span className="game-type-name">Mario Runner</span>
+                <span className="game-type-desc">2 min race — survive & advance</span>
+              </button>
             </div>
           </div>
         )}

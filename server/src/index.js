@@ -5,6 +5,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createBoard, makeMove, createMineBoard, revealMineCell, revealAllMines, submitPenaltyChoice, startNextPenaltyKick } from './gameLogic.js';
+import { initPlatformerGame, tickPlatformerGame, getPlatformerDynamicState, getPlatformerLevelData, getPlatformerResults } from './platformerLogic.js';
 import {
   createTournament, startRound, createGameForSeries, finalizeSeries,
   checkRoundComplete, addCoins, penalizeDraw, getMostCoinsPlayer, getRoundResults,
@@ -29,6 +30,7 @@ const io = new Server(server, {
 const rooms = new Map();
 const timerIntervals = new Map();
 const bettingIntervals = new Map();
+const platformerIntervals = new Map();
 
 const TIME_LIMIT = 30000;
 const MOVE_COOLDOWN = 800;
@@ -220,6 +222,15 @@ function startGame(roomId) {
 
   const game = createGameForSeries(room.tournament, series, room.gameType || 'tictactoe');
   if (!game) return;
+
+  if (game.type === 'platformer') {
+    initPlatformerGame(game.platformerSetup);
+    startPlatformerLoop(roomId, game);
+    game.currentTurn = null;
+    const levelData = getPlatformerLevelData(game.platformerSetup);
+    io.to(roomId).emit('match-start', { match: game, series, platformerLevel: levelData });
+    return;
+  }
 
   if (game.type !== 'penalty') {
     initMatchTimer(game);
@@ -611,6 +622,95 @@ function stopTimerInterval(roomId) {
   if (interval) { clearInterval(interval); timerIntervals.delete(roomId); }
 }
 
+const platformerInputs = new Map();
+
+function startPlatformerLoop(roomId, game) {
+  if (platformerIntervals.has(roomId)) return;
+  const interval = setInterval(() => {
+    const room = rooms.get(roomId);
+    if (!room || !room.tournament || !room.tournament.currentGame) {
+      clearInterval(interval); platformerIntervals.delete(roomId); return;
+    }
+    const g = room.tournament.currentGame;
+    if (g.id !== game.id || !g.platformerSetup) {
+      clearInterval(interval); platformerIntervals.delete(roomId); return;
+    }
+    const setup = g.platformerSetup;
+    if (setup.finished) {
+      clearInterval(interval); platformerIntervals.delete(roomId);
+      handlePlatformerEnd(roomId, g);
+      return;
+    }
+    const inputs = platformerInputs.get(roomId) || {};
+    tickPlatformerGame(setup, inputs);
+    const state = getPlatformerDynamicState(setup);
+    state.matchId = game.id;
+    io.to(roomId).emit('platformer-state', state);
+  }, 50);
+  platformerIntervals.set(roomId, interval);
+}
+
+function handlePlatformerEnd(roomId, game) {
+  const room = rooms.get(roomId);
+  if (!room || !room.tournament) return;
+  const setup = game.platformerSetup;
+  const results = getPlatformerResults(setup);
+  const series = room.tournament.currentSeries;
+  if (!series) return;
+
+  game.status = 'finished';
+  const winnerPlayer = results.winner ? room.tournament.players.find(p => p.id === results.winner.id) : null;
+  const loserId = results.winner?.id === series.player1.id ? series.player2.id : series.player1.id;
+
+  game.scores = {};
+  for (const p of results.sorted) {
+    game.scores[p.id] = p.distance;
+  }
+
+  io.to(roomId).emit('match-result', {
+    match: game, winner: winnerPlayer, draw: !results.winner,
+    platformerResults: results.sorted, tournament: room.tournament,
+  });
+
+  if (results.winner) {
+    if (results.winner.id === series.player1.id) series.p1wins++;
+    else series.p2wins++;
+    const fsResult = finalizeSeries(room.tournament, series);
+    if (fsResult.winner) {
+      distributePot(room.tournament, series, fsResult.winner.id);
+    }
+    io.to(roomId).emit('series-result', {
+      seriesId: series.id,
+      winner: fsResult.winner,
+      loserId: fsResult.loserId,
+      p1wins: series.p1wins,
+      p2wins: series.p2wins,
+    });
+  } else {
+    penalizeDraw(room.tournament, game.player1.id, game.player2.id);
+    refundBets(room.tournament, series);
+    const fsResult = finalizeSeries(room.tournament, series);
+    io.to(roomId).emit('series-result', {
+      seriesId: series.id,
+      winner: null,
+      loserId: null,
+      p1wins: series.p1wins,
+      p2wins: series.p2wins,
+    });
+  }
+
+  setTimeout(() => {
+    io.to(roomId).emit('tournament-update', { tournament: room.tournament });
+    launchNextSeries(roomId);
+  }, 4000);
+}
+
+function stopPlatformerLoop(roomId) {
+  const interval = platformerIntervals.get(roomId);
+  if (interval) { clearInterval(interval); platformerIntervals.delete(roomId); }
+  platformerInputs.delete(roomId);
+}
+
 function handleDisconnectMatch(room, roomId, socket) {
   const tournament = room.tournament;
   if (!tournament) return;
@@ -623,6 +723,17 @@ function handleDisconnectMatch(room, roomId, socket) {
   }
 
   if (game && game.status === 'playing') {
+    if (game.type === 'platformer') {
+      stopPlatformerLoop(roomId);
+      const setup = game.platformerSetup;
+      if (setup) {
+        const deadPlayer = setup.players.find(p => p.id === socket.id);
+        if (deadPlayer) deadPlayer.alive = false;
+        setup.timeRemaining = 0;
+        setup.finished = true;
+      }
+      return;
+    }
     stopTimerInterval(roomId);
     const otherId = game.player1.id === socket.id ? game.player2.id : game.player1.id;
     game.status = 'finished';
@@ -887,6 +998,18 @@ io.on('connection', (socket) => {
         }
       }, 2500);
     }
+  });
+
+  socket.on('platform-input', ({ matchId, keys }) => {
+    const room = rooms.get(currentRoom);
+    if (!room || !room.tournament) return;
+    const game = room.tournament.currentGame;
+    if (!game || game.id !== matchId || game.type !== 'platformer') return;
+    if (!platformerInputs.has(currentRoom)) {
+      platformerInputs.set(currentRoom, {});
+    }
+    const inputs = platformerInputs.get(currentRoom);
+    inputs[socket.id] = { left: keys.left, right: keys.right, jump: keys.jump };
   });
 
   socket.on('leave-room', () => {
