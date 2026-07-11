@@ -32,6 +32,19 @@ const timerIntervals = new Map();
 const bettingIntervals = new Map();
 const platformerIntervals = new Map();
 
+const reconnectTimers = new Map();
+const activePersistentIds = new Set();
+const RECONNECT_GRACE_MS = 10000;
+
+function findPlayerBySocket(room, socketId) {
+  return room?.players?.find(p => p.socketId === socketId) || null;
+}
+
+function getPid(room, socketId) {
+  const p = findPlayerBySocket(room, socketId);
+  return p ? p.id : null;
+}
+
 const TIME_LIMIT = 30000;
 const MOVE_COOLDOWN = 800;
 const MAX_SPEED_POINTS = 50;
@@ -202,7 +215,10 @@ function finalizeBetting(roomId, series) {
   }
   for (const [bettorId, bet] of Object.entries(series.bets)) {
     const tp = tPlayers.find(p => p.id === bettorId);
-    if (tp) tp.coins = Math.max(0, tp.coins - bet.amount);
+    if (tp) {
+      tp.coins = Math.max(0, tp.coins - bet.amount);
+      tp.totalWagered = (tp.totalWagered || 0) + bet.amount;
+    }
   }
   series.totalPot = Object.values(series.bets).reduce((sum, b) => sum + b.amount, 0);
   series.status = 'playing';
@@ -321,10 +337,16 @@ function finishTournament(roomId) {
   }
   const richest = getMostCoinsPlayer(room.tournament);
 
+  const bestBettor = [...(room.tournament.players || [])]
+    .filter(p => (p.bettingProfit || 0) > 0)
+    .sort((a, b) => (b.bettingProfit || 0) - (a.bettingProfit || 0))
+    .slice(0, 2);
+
   io.to(roomId).emit('tournament-end', {
     champion: champ,
     runnerUp,
     mostCoins: richest,
+    bestBettor: bestBettor.length > 0 ? bestBettor : null,
     tournament: room.tournament,
   });
 }
@@ -338,7 +360,9 @@ function distributePot(tournament, series, winnerId) {
   for (const [bettorId, bet] of winningBets) {
     const tp = tournament.players.find(p => p.id === bettorId);
     if (tp) {
-      tp.coins += Math.floor(boostedPot * bet.amount / winningTotal);
+      const winnings = Math.floor(boostedPot * bet.amount / winningTotal);
+      tp.coins += winnings;
+      tp.bettingProfit = (tp.bettingProfit || 0) + winnings - bet.amount;
     }
   }
 }
@@ -711,7 +735,7 @@ function stopPlatformerLoop(roomId) {
   platformerInputs.delete(roomId);
 }
 
-function handleDisconnectMatch(room, roomId, socket) {
+function handleDisconnectMatch(room, roomId, playerId) {
   const tournament = room.tournament;
   if (!tournament) return;
   const series = tournament.currentSeries;
@@ -725,17 +749,9 @@ function handleDisconnectMatch(room, roomId, socket) {
   if (game && game.status === 'playing') {
     if (game.type === 'platformer') {
       stopPlatformerLoop(roomId);
-      const setup = game.platformerSetup;
-      if (setup) {
-        const deadPlayer = setup.players.find(p => p.id === socket.id);
-        if (deadPlayer) deadPlayer.alive = false;
-        setup.timeRemaining = 0;
-        setup.finished = true;
-      }
-      return;
     }
     stopTimerInterval(roomId);
-    const otherId = game.player1.id === socket.id ? game.player2.id : game.player1.id;
+    const otherId = game.player1.id === playerId ? game.player2.id : game.player1.id;
     game.status = 'finished';
     game.winner = otherId;
     const otherPlayer = room.players.find((p) => p.id === otherId);
@@ -745,7 +761,7 @@ function handleDisconnectMatch(room, roomId, socket) {
       byDisconnect: true, tournament,
     });
 
-    handleAfterGame(roomId, game, otherId, socket.id, false);
+    handleAfterGame(roomId, game, otherId, playerId, false);
   }
 }
 
@@ -753,12 +769,60 @@ io.on('connection', (socket) => {
   let currentRoom = null;
   let currentPlayer = null;
 
-  socket.on('join-room', ({ roomId, playerName, avatar }, callback) => {
+  socket.on('join-room', ({ roomId, playerName, avatar, persistentId }, callback) => {
     let room = rooms.get(roomId);
     if (!room) {
-      room = { id: roomId, players: [], tournament: null, hostId: socket.id };
+      room = { id: roomId, players: [], tournament: null, hostId: null };
       rooms.set(roomId, room);
     }
+
+    const existing = persistentId ? room.players.find(p => p.id === persistentId) : null;
+    if (existing) {
+      const timerKey = `${roomId}_${persistentId}`;
+      if (reconnectTimers.has(timerKey)) {
+        clearTimeout(reconnectTimers.get(timerKey));
+        reconnectTimers.delete(timerKey);
+      }
+      existing.socketId = socket.id;
+      existing.connected = true;
+      if (!activePersistentIds.has(persistentId)) activePersistentIds.add(persistentId);
+      if (room.tournament?.currentGame?.type === 'platformer') {
+        const setup = room.tournament.currentGame.platformerSetup;
+        if (setup && setup.paused) {
+          setup.paused = false;
+          startPlatformerLoop(roomId, room.tournament.currentGame);
+        }
+      }
+      currentRoom = roomId;
+      currentPlayer = existing;
+      socket.join(roomId);
+
+      const rg = room.tournament?.currentGame || null;
+      const rs = room.tournament?.currentSeries || null;
+      const rPL = rg?.type === 'platformer' && rg.platformerSetup ? getPlatformerLevelData(rg.platformerSetup) : null;
+
+      callback({
+        success: true, playerId: existing.id, roomId, reconnected: true,
+        tournament: room.tournament, gameType: room.gameType || 'tictactoe',
+        currentMatch: rg ? { ...rg, platformerLevel: rPL } : null,
+        currentSeries: rs,
+        bettingEndAt: rs?.bettingEndAt || null,
+        bets: rs?.bets || {},
+        players: room.players.map(p => ({
+          id: p.id, name: p.name, avatar: p.avatar,
+          connected: p.connected, inMatch: p.inMatch,
+          eliminated: p.eliminated, isHost: p.isHost,
+          coins: getPlayerCoins(room.tournament, p.id) ?? p.coins ?? 0,
+        })),
+      });
+      emitRoomUpdate(roomId);
+      return;
+    }
+
+    if (persistentId && activePersistentIds.has(persistentId)) {
+      return callback({ error: 'Already connected from another tab. Please close the other tab first.' });
+    }
+
     if (room.players.length >= 16) return callback({ error: 'Room is full (max 16 players)' });
     if (room.tournament && (room.tournament.phase === 'finished' || room.tournament.phase === 'cancelled')) {
       room.tournament = null;
@@ -772,16 +836,18 @@ io.on('connection', (socket) => {
       .slice(0, 20);
 
     const player = {
-      id: socket.id, name: sanitized || 'Player', avatar, connected: true,
-      inMatch: false, eliminated: false,
+      id: persistentId || socket.id, name: sanitized || 'Player', avatar, connected: true,
+      socketId: socket.id, inMatch: false, eliminated: false,
       isHost: room.players.length === 0, coins: INITIAL_COINS,
     };
     room.players.push(player);
+    if (!room.hostId) room.hostId = player.id;
+    if (persistentId) activePersistentIds.add(persistentId);
     currentRoom = roomId;
     currentPlayer = player;
     socket.join(roomId);
     emitRoomUpdate(roomId);
-    callback({ success: true, playerId: socket.id, roomId });
+    callback({ success: true, playerId: player.id, roomId });
   });
 
   socket.on('new-tournament', () => {
@@ -798,7 +864,8 @@ io.on('connection', (socket) => {
 
   socket.on('start-tournament', ({ gameType = 'tictactoe' } = {}) => {
     const room = rooms.get(currentRoom);
-    if (!room || room.hostId !== socket.id || room.players.length < 2) return;
+    const hPid = getPid(room, socket.id);
+    if (!room || room.hostId !== hPid || room.players.length < 2) return;
 
     room.gameType = gameType;
     room.tournament = createTournament(room.players);
@@ -823,16 +890,23 @@ io.on('connection', (socket) => {
     if (!room || !room.tournament || !room.tournament.currentSeries) return;
     const series = room.tournament.currentSeries;
     if (series.status !== 'betting') return;
-    const roomPlayer = room.players.find(p => p.id === socket.id);
+    const pid = getPid(room, socket.id);
+    if (!pid) return;
+    const roomPlayer = findPlayerBySocket(room, socket.id);
     if (!roomPlayer || !roomPlayer.connected || roomPlayer.eliminated) return;
     if (on !== series.player1.id && on !== series.player2.id) return;
-    const tPlayer = room.tournament.players.find((p) => p.id === socket.id);
-    if (!tPlayer || series.bets[socket.id]) return;
+    const tPlayer = room.tournament.players.find((p) => p.id === pid);
+    if (!tPlayer || series.bets[pid]) return;
     const betAmount = Math.max(0, Math.min(Math.floor(amount), tPlayer.coins));
-    series.bets[socket.id] = { on, amount: betAmount };
+    series.bets[pid] = { on, amount: betAmount };
     io.to(currentRoom).emit('bet-update', {
-      matchId, bettorId: socket.id, on, amount: betAmount,
+      matchId, bettorId: pid, on, amount: betAmount,
     });
+    if (series.bets[series.player1.id] && series.bets[series.player2.id]) {
+      if (series.bettingTimer) clearTimeout(series.bettingTimer);
+      series.bettingTimer = null;
+      finalizeBetting(currentRoom, series);
+    }
   });
 
   socket.on('make-move', ({ matchId, cellIndex }) => {
@@ -840,11 +914,12 @@ io.on('connection', (socket) => {
     if (!room || !room.tournament) return;
     const game = room.tournament.currentGame;
     if (!game || game.id !== matchId || game.status !== 'playing') return;
-    if (game.currentTurn !== socket.id) return;
+    const pid = getPid(room, socket.id);
+    if (!pid || game.currentTurn !== pid) return;
     if (game.moveCooldownUntil && Date.now() < game.moveCooldownUntil) return;
 
     const speedPoints = calcSpeedPoints(game);
-    addCoins(room.tournament, socket.id, speedPoints);
+    addCoins(room.tournament, pid, speedPoints);
 
     for (const tp of room.tournament.players) {
       tp.coins = (tp.coins || 0) + 100;
@@ -854,7 +929,7 @@ io.on('connection', (socket) => {
       const result = revealMineCell(game, cellIndex);
       if (!result.valid) return;
 
-      game.moves.push({ playerId: socket.id, cellIndex });
+      game.moves.push({ playerId: pid, cellIndex });
 
       if (result.mine) {
         revealAllMines(game.board);
@@ -870,8 +945,8 @@ io.on('connection', (socket) => {
         return;
       }
 
-      game.turnScores[socket.id] = (game.turnScores[socket.id] || 0) + 1;
-      game.scores[socket.id] = (game.scores[socket.id] || 0) + 1;
+      game.turnScores[pid] = (game.turnScores[pid] || 0) + 1;
+      game.scores[pid] = (game.scores[pid] || 0) + 1;
 
       io.to(currentRoom).emit('mine-board-update', {
         matchId: game.id,
@@ -884,12 +959,12 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const playerMark = game.player1.id === socket.id ? 'X' : 'O';
+    const playerMark = game.player1.id === pid ? 'X' : 'O';
     const result = makeMove(game.board, cellIndex, playerMark);
     if (!result.valid) return;
 
     game.board = result.board;
-    game.moves.push({ playerId: socket.id, cellIndex, mark: playerMark, speedPoints });
+    game.moves.push({ playerId: pid, cellIndex, mark: playerMark, speedPoints });
 
     if (result.win || result.draw) {
       game.status = 'finished';
@@ -897,7 +972,7 @@ io.on('connection', (socket) => {
       switchTurn(game);
 
       const winnerPlayer = result.win
-        ? room.tournament.players.find((p) => p.id === socket.id)
+        ? room.tournament.players.find((p) => p.id === pid)
         : null;
       io.to(currentRoom).emit('match-result', {
         match: game, winner: winnerPlayer, draw: result.draw,
@@ -905,8 +980,8 @@ io.on('connection', (socket) => {
       });
 
       if (result.win) {
-        const loserId = game.player1.id === socket.id ? game.player2.id : game.player1.id;
-        handleAfterGame(currentRoom, game, socket.id, loserId, false);
+        const loserId = game.player1.id === pid ? game.player2.id : game.player1.id;
+        handleAfterGame(currentRoom, game, pid, loserId, false);
       } else {
         penalizeDraw(room.tournament, game.player1.id, game.player2.id);
         handleAfterGame(currentRoom, game, null, null, true);
@@ -928,9 +1003,11 @@ io.on('connection', (socket) => {
     if (!room || !room.tournament) return;
     const game = room.tournament.currentGame;
     if (!game || game.id !== matchId || game.status !== 'playing' || game.type !== 'penalty') return;
+    const pid = getPid(room, socket.id);
+    if (!pid) return;
 
     if (direction !== 1 && direction !== 2 && direction !== 3) return;
-    const result = submitPenaltyChoice(game, socket.id, direction);
+    const result = submitPenaltyChoice(game, pid, direction);
     if (!result.valid) return;
 
     if (result.waiting) {
@@ -1005,36 +1082,111 @@ io.on('connection', (socket) => {
     if (!room || !room.tournament) return;
     const game = room.tournament.currentGame;
     if (!game || game.id !== matchId || game.type !== 'platformer') return;
+    const pid = getPid(room, socket.id);
+    if (!pid) return;
     if (!platformerInputs.has(currentRoom)) {
       platformerInputs.set(currentRoom, {});
     }
     const inputs = platformerInputs.get(currentRoom);
-    inputs[socket.id] = { left: keys.left, right: keys.right, jump: keys.jump };
+    inputs[pid] = { left: keys.left, right: keys.right, jump: keys.jump };
   });
 
   socket.on('leave-room', () => {
     const room = rooms.get(currentRoom);
     if (!room) return;
-    const player = room.players.find((p) => p.id === socket.id);
+    const player = findPlayerBySocket(room, socket.id);
+    const pid = player?.id;
+    if (pid) activePersistentIds.delete(pid);
     socket.leave(currentRoom);
     if (player) {
       player.connected = false;
-      io.to(currentRoom).emit('player-abandoned', { playerName: player.name, playerId: player.id });
-    }
-    if (room.tournament && room.tournament.currentGame &&
-        (room.tournament.currentGame.player1.id === socket.id ||
-         room.tournament.currentGame.player2.id === socket.id)) {
-      handleDisconnectMatch(room, currentRoom, socket);
+      io.to(currentRoom).emit('player-abandoned', { playerName: player.name, playerId: player.id, avatar: player.avatar });
+      handleDisconnectMatch(room, currentRoom, pid);
       return;
     }
     emitRoomUpdate(currentRoom);
   });
 
+  socket.on('host-end-match', ({ confirm } = {}) => {
+    const room = rooms.get(currentRoom);
+    const hPid = getPid(room, socket.id);
+    if (!room || !hPid || room.hostId !== hPid) return;
+    if (!room.tournament?.currentGame || room.tournament.currentGame.status !== 'playing') return;
+    const game = room.tournament.currentGame;
+    const p1 = room.players.find(p => p.id === game.player1.id);
+    const p2 = room.players.find(p => p.id === game.player2.id);
+    let loserId = null;
+    if (p1 && !p1.connected) loserId = p1.id;
+    else if (p2 && !p2.connected) loserId = p2.id;
+    if (!loserId) loserId = hPid;
+    const timerKey = `${currentRoom}_${loserId}`;
+    if (reconnectTimers.has(timerKey)) {
+      clearTimeout(reconnectTimers.get(timerKey));
+      reconnectTimers.delete(timerKey);
+    }
+    handleDisconnectMatch(room, currentRoom, loserId);
+    emitRoomUpdate(currentRoom);
+  });
+
+  socket.on('rejoin-room', ({ roomId, persistentId }, callback) => {
+    const room = rooms.get(roomId);
+    if (!room) return callback({ success: false, error: 'Room not found' });
+    const player = room.players.find(p => p.id === persistentId);
+    if (!player) return callback({ success: false, error: 'Player not found in room' });
+
+    const timerKey = `${roomId}_${persistentId}`;
+    if (reconnectTimers.has(timerKey)) {
+      clearTimeout(reconnectTimers.get(timerKey));
+      reconnectTimers.delete(timerKey);
+    }
+
+    player.socketId = socket.id;
+    player.connected = true;
+    socket.join(roomId);
+    currentRoom = roomId;
+    currentPlayer = player;
+
+    const game = room.tournament?.currentGame || null;
+    const series = room.tournament?.currentSeries || null;
+
+    if (game?.type === 'platformer') {
+      const setup = game.platformerSetup;
+      if (setup && setup.paused && !setup.finished) {
+        setup.paused = false;
+        startPlatformerLoop(roomId, game);
+      }
+    }
+
+    const platformerLevel = game?.type === 'platformer' && game.platformerSetup
+      ? getPlatformerLevelData(game.platformerSetup) : null;
+
+    callback({
+      success: true, playerId: player.id, roomId,
+      tournament: room.tournament,
+      currentMatch: game ? { ...game, platformerLevel } : null,
+      currentSeries: series,
+      gameType: room.gameType || 'tictactoe',
+      bettingEndAt: series?.bettingEndAt || null,
+      bets: series?.bets || {},
+      totalPot: series?.totalPot || 0,
+      players: room.players.map(p => ({
+        id: p.id, name: p.name, avatar: p.avatar,
+        connected: p.connected, inMatch: p.inMatch,
+        eliminated: p.eliminated, isHost: p.isHost,
+        coins: getPlayerCoins(room.tournament, p.id) ?? p.coins ?? 0,
+      })),
+    });
+    emitRoomUpdate(roomId);
+  });
+
   socket.on('disconnect', () => {
     const room = rooms.get(currentRoom);
+    const pid = currentPlayer?.id || (room ? findPlayerBySocket(room, socket.id)?.id : null);
+    if (pid) activePersistentIds.delete(pid);
     if (!room) return;
-    const player = room.players.find((p) => p.id === socket.id);
-    if (player) player.connected = false;
+    const player = findPlayerBySocket(room, socket.id);
+    if (!player) return;
+    player.connected = false;
 
     if (room.tournament) {
       const activePlayers = room.players.filter((p) => p.connected && !p.eliminated);
@@ -1042,12 +1194,37 @@ io.on('connection', (socket) => {
         room.tournament.phase = 'cancelled';
         stopTimerInterval(currentRoom);
         io.to(currentRoom).emit('tournament-cancelled', { reason: 'Too many players disconnected' });
+        rooms.delete(currentRoom);
+        return;
       }
-      if (room.tournament.currentGame &&
-          (room.tournament.currentGame.player1.id === socket.id ||
-           room.tournament.currentGame.player2.id === socket.id)) {
-        if (player) io.to(currentRoom).emit('player-abandoned', { playerName: player.name, playerId: player.id });
-        handleDisconnectMatch(room, currentRoom, socket);
+
+      const game = room.tournament.currentGame;
+      if (game &&
+          (game.player1.id === pid ||
+           game.player2.id === pid)) {
+        io.to(currentRoom).emit('player-abandoned', { playerName: player.name, playerId: pid, avatar: player.avatar });
+
+        const timerKey = `${currentRoom}_${pid}`;
+        if (game.type === 'platformer') {
+          const setup = game.platformerSetup;
+          if (setup && !setup.finished) {
+            setup.paused = true;
+            stopPlatformerLoop(currentRoom);
+          }
+        }
+
+        if (!reconnectTimers.has(timerKey)) {
+          reconnectTimers.set(timerKey, setTimeout(() => {
+            reconnectTimers.delete(timerKey);
+            const r = rooms.get(currentRoom);
+            if (r && r.tournament?.currentGame?.status === 'playing') {
+              handleDisconnectMatch(r, currentRoom, pid);
+              emitRoomUpdate(currentRoom);
+            } else if (r) {
+              emitRoomUpdate(currentRoom);
+            }
+          }, RECONNECT_GRACE_MS));
+        }
       }
     }
     emitRoomUpdate(currentRoom);

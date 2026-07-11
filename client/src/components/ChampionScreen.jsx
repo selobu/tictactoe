@@ -4,7 +4,7 @@ import AvatarDisplay from './AvatarDisplay';
 const COLORS = ['#f7971e', '#ffd200', '#ff6b6b', '#48dbfb', '#ff9ff3', '#54a0ff', '#5f27cd', '#01a3a4', '#f368e0', '#ff9f43'];
 const SHAPES = ['●', '■', '▲', '★', '♦', '♥'];
 
-export default function ChampionScreen({ champion, players, onPlayAgain, runnerUp, mostCoins }) {
+export default function ChampionScreen({ champion, players, onPlayAgain, runnerUp, mostCoins, bestBettor }) {
   const particles = useMemo(() =>
     Array.from({ length: 60 }, (_, i) => ({
       id: i,
@@ -71,6 +71,21 @@ export default function ChampionScreen({ champion, players, onPlayAgain, runnerU
             <h4>{mostCoins.name}</h4>
             <p className="richest-coins">{mostCoins.coins ?? 0} 🪙</p>
             <p className="richest-label">Richest Player</p>
+          </div>
+        )}
+        {bestBettor && bestBettor.length > 0 && (
+          <div className="bettor-card">
+            <div className="bettor-badge">🎲</div>
+            <div className="bettor-avatar"><AvatarDisplay character={bestBettor[0].avatar} size={40} /></div>
+            <h4>{bestBettor[0].name}</h4>
+            <p className="bettor-profit">+{bestBettor[0].bettingProfit ?? 0} 🪙</p>
+            <p className="bettor-label">Biggest Bettor</p>
+            {bestBettor[1] && (
+              <div className="bettor-sub">
+                <AvatarDisplay character={bestBettor[1].avatar} size={20} />
+                <span>{bestBettor[1].name} +{bestBettor[1].bettingProfit ?? 0} 🪙</span>
+              </div>
+            )}
           </div>
         )}
         <div className="leaderboard-card">

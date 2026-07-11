@@ -75,15 +75,15 @@ function drawPlayerFrame(ctx, dx, dy, pal, frame, isJump, isDeath) {
   if (isDeath) ctx.fillStyle = '#ccc';
   ctx.fillRect(dx + 5, dy + 6 + hatBob, w - 10, 10);
 
-  ctx.fillStyle = pal.hat;
-  if (isDeath) ctx.fillStyle = '#777';
-  ctx.fillRect(dx + 1, dy + hatBob - 2, w - 2, 8);
-  ctx.fillRect(dx + 3, dy + hatBob - 6, w - 6, 6);
-
   ctx.fillStyle = pal.hair;
   if (isDeath) ctx.fillStyle = '#888';
   ctx.fillRect(dx + 4, dy + 4 + hatBob, 5, 3);
   ctx.fillRect(dx + w - 9, dy + 4 + hatBob, 5, 3);
+
+  ctx.fillStyle = pal.hat;
+  if (isDeath) ctx.fillStyle = '#777';
+  ctx.fillRect(dx + 1, dy + hatBob - 2, w - 2, 8);
+  ctx.fillRect(dx + 3, dy + hatBob - 6, w - 6, 6);
 
   ctx.fillStyle = pal.eyes;
   ctx.fillRect(dx + 7, dy + 8 + hatBob, 3, 3);

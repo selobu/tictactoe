@@ -19,6 +19,15 @@ function findPlayer(players, id) {
   return players?.find(p => p.id === id);
 }
 
+function getPersistentId() {
+  let id = localStorage.getItem('ttt-player-id');
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem('ttt-player-id', id);
+  }
+  return id;
+}
+
 export default function App() {
   const [screen, setScreen] = useState('lobby');
   const [playerId, setPlayerId] = useState(null);
@@ -42,6 +51,7 @@ export default function App() {
   const [bettingEndAt, setBettingEndAt] = useState(0);
   const [bets, setBets] = useState({});
   const [abandonToast, setAbandonToast] = useState(null);
+  const [showEndMatchConfirm, setShowEndMatchConfirm] = useState(false);
   const [roundResults, setRoundResults] = useState(null);
   const [gameType, setGameType] = useState('tictactoe');
   const [mineScores, setMineScores] = useState(null);
@@ -60,9 +70,69 @@ export default function App() {
 
   useEffect(() => {
     window.addEventListener('beforeunload', () => {
-      socket.emit('leave-room');
       socket.disconnect();
     });
+  }, []);
+
+  // Auto-rejoin on mount if we have a saved session
+  useEffect(() => {
+    const savedRoomId = localStorage.getItem('ttt-room-id');
+    const persistentId = getPersistentId();
+    if (savedRoomId && persistentId) {
+      setJoining(true);
+      const doRejoin = () => {
+        socket.emit('rejoin-room', { roomId: savedRoomId, persistentId }, (res) => {
+          setJoining(false);
+          if (res.success) {
+            setPlayerId(res.playerId);
+            setRoomId(res.roomId);
+            setPlayers(res.players || []);
+            setTournament(res.tournament);
+            setGameType(res.gameType || 'tictactoe');
+            if (res.currentMatch) {
+              setCurrentMatch(res.currentMatch);
+              if (res.currentMatch.type === 'platformer') {
+                setPlatformerState(null);
+                setPlatformerFinished(false);
+                setPlatformerResults(null);
+                setPlatformerLevel(res.currentMatch.platformerLevel || null);
+              } else if (res.currentMatch.type === 'minefinder') {
+                setMineScores(res.currentMatch.scores || null);
+                setMineHitIndex(-1);
+                setMineHitLock(false);
+              }
+              setBoardVersion(0);
+              transitionTo('game');
+            } else if (res.currentSeries?.status === 'betting') {
+              setBettingMatch(res.currentSeries.id);
+              setBettingPlayer1(res.currentSeries.player1);
+              setBettingPlayer2(res.currentSeries.player2);
+              setBettingEndAt(res.bettingEndAt || 0);
+              setBets(res.bets || {});
+              setMessage(res.tournament ? `Round ${res.tournament.round} Betting` : 'Betting open!');
+              transitionTo('betting');
+            } else if (res.tournament?.champion) {
+              setChampion(res.tournament.champion);
+              transitionTo('champion');
+            } else {
+              setScreen('waiting');
+              animateIn();
+            }
+          } else {
+            localStorage.removeItem('ttt-room-id');
+            setError(res.error || 'Session expired. Please join again.');
+            setScreen('lobby');
+          }
+        });
+      };
+      if (socket.connected) {
+        doRejoin();
+      } else {
+        socket.once('connect', doRejoin);
+        socket.once('connect_error', () => { setJoining(false); setScreen('lobby'); });
+        socket.connect();
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -220,6 +290,7 @@ export default function App() {
         ...prev,
         runnerUp: data.runnerUp,
         mostCoins: data.mostCoins,
+        bestBettor: data.bestBettor,
         champion: data.champion,
       }));
       transitionTo('champion');
@@ -284,8 +355,9 @@ export default function App() {
     });
 
     socket.on('player-abandoned', (data) => {
-      setAbandonToast({ playerName: data.playerName, playerId: data.playerId });
-      setTimeout(() => setAbandonToast(null), 4000);
+      setAbandonToast({ playerName: data.playerName, playerId: data.playerId, avatar: data.avatar || 'mario' });
+      import('./utils/marioMusic').then(({ playMarioDeathSound }) => playMarioDeathSound());
+      setTimeout(() => setAbandonToast(null), 6000);
     });
 
     return () => {
@@ -331,17 +403,52 @@ export default function App() {
   }
 
   const handleJoinRoom = useCallback((name, room, avatar) => {
+    const persistentId = getPersistentId();
     setPlayerName(name);
     setRoomId(room);
     setJoining(true);
     setError('');
 
     const doEmit = () => {
-      socket.emit('join-room', { roomId: room, playerName: name, avatar }, (res) => {
+      socket.emit('join-room', { roomId: room, playerName: name, avatar, persistentId }, (res) => {
         setJoining(false);
         if (res.success) {
           setPlayerId(res.playerId);
-          setScreen('waiting');
+          localStorage.setItem('ttt-room-id', room);
+          localStorage.setItem('ttt-player-name', name);
+          if (res.reconnected) {
+            setPlayers(res.players || []);
+            setTournament(res.tournament);
+            setGameType(res.gameType || 'tictactoe');
+            if (res.currentMatch) {
+              setCurrentMatch(res.currentMatch);
+              if (res.currentMatch.type === 'platformer') {
+                setPlatformerState(null);
+                setPlatformerFinished(false);
+                setPlatformerResults(null);
+                setPlatformerLevel(res.currentMatch.platformerLevel || null);
+              } else if (res.currentMatch.type === 'minefinder') {
+                setMineScores(res.currentMatch.scores || null);
+                setMineHitIndex(-1);
+                setMineHitLock(false);
+              }
+              setBoardVersion(0);
+              transitionTo('game');
+            } else if (res.currentSeries?.status === 'betting') {
+              setBettingMatch(res.currentSeries.id);
+              setBettingPlayer1(res.currentSeries.player1);
+              setBettingPlayer2(res.currentSeries.player2);
+              setBettingEndAt(res.bettingEndAt || 0);
+              setBets(res.bets || {});
+              setMessage(res.tournament ? `Round ${res.tournament.round} Betting` : 'Betting open!');
+              transitionTo('betting');
+            } else {
+              setScreen('waiting');
+              animateIn();
+            }
+          } else {
+            setScreen('waiting');
+          }
           playMarioTheme();
         } else if (res.error) {
           setError(res.error);
@@ -379,6 +486,11 @@ export default function App() {
 
   const handlePlaceBet = useCallback((matchId, amount, on) => {
     socket.emit('place-bet', { matchId, amount, on });
+  }, []);
+
+  const handleEndMatch = useCallback(() => {
+    socket.emit('host-end-match', { confirm: true });
+    setShowEndMatchConfirm(false);
   }, []);
 
   const handlePlayAgain = useCallback(() => {
@@ -551,6 +663,23 @@ export default function App() {
               />
             )}
             <div className="players-sidebar">
+              {players.find(p => p.id === playerId)?.isHost && currentMatch && players.some(p => !p.connected && (p.id === currentMatch.player1.id || p.id === currentMatch.player2.id)) && (
+                <>
+                  <button className="end-match-btn" onClick={() => setShowEndMatchConfirm(true)}>End Match</button>
+                  {showEndMatchConfirm && (
+                    <div className="confirm-overlay" onClick={() => setShowEndMatchConfirm(false)}>
+                      <div className="confirm-dialog" onClick={e => e.stopPropagation()}>
+                        <h3>End Match?</h3>
+                        <p>A player has disconnected. Ending the match will award the win to the remaining player.</p>
+                        <div className="confirm-actions">
+                          <button className="confirm-cancel" onClick={() => setShowEndMatchConfirm(false)}>Cancel</button>
+                          <button className="confirm-yes" onClick={handleEndMatch}>Yes, End Match</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
               <h3>Players <span className="player-count">{players.filter(p => p.connected).length}/{players.length}</span></h3>
               <ul className="player-list">
                 {players.map((p, i) => (
@@ -602,12 +731,14 @@ export default function App() {
             onPlayAgain={handlePlayAgain}
             runnerUp={tournament?.runnerUp}
             mostCoins={tournament?.mostCoins}
+            bestBettor={tournament?.bestBettor}
           />
         )}
 
         {abandonToast && (
           <div className="abandon-toast">
-            <span className="abandon-icon">🚪</span>
+            <span className="abandon-avatar"><AvatarDisplay character={abandonToast.avatar} size={36} /></span>
+            <span className="abandon-icon">😢</span>
             <span className="abandon-text">{abandonToast.playerName} abandoned the competition</span>
           </div>
         )}
