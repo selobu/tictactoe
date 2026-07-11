@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { socket } from './socket';
 import Lobby from './components/Lobby';
 import WaitingRoom from './components/WaitingRoom';
@@ -30,6 +30,7 @@ function getPersistentId() {
 
 export default function App() {
   const [screen, setScreen] = useState('lobby');
+  const screenRef = useRef('lobby');
   const [playerId, setPlayerId] = useState(null);
   const [roomId, setRoomId] = useState(null);
   const [playerName, setPlayerName] = useState('');
@@ -80,7 +81,25 @@ export default function App() {
     const persistentId = getPersistentId();
     if (savedRoomId && persistentId) {
       setJoining(true);
-      const doRejoin = () => {
+      if (!socket.connected) {
+        socket.once('connect_error', () => { setJoining(false); setScreen('lobby'); });
+        socket.connect();
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    socket.on('room-update', (data) => {
+      setPlayers(data.players);
+      if (data.tournament) setTournament(data.tournament);
+      if (data.gameType) setGameType(data.gameType);
+      animateIn();
+    });
+
+    socket.on('connect', () => {
+      const savedRoomId = localStorage.getItem('ttt-room-id');
+      const persistentId = getPersistentId();
+      if (savedRoomId && persistentId) {
         socket.emit('rejoin-room', { roomId: savedRoomId, persistentId }, (res) => {
           setJoining(false);
           if (res.success) {
@@ -91,6 +110,7 @@ export default function App() {
             setGameType(res.gameType || 'tictactoe');
             if (res.currentMatch) {
               setCurrentMatch(res.currentMatch);
+              // ... platformer/minefinder state reset handled inline below
               if (res.currentMatch.type === 'platformer') {
                 setPlatformerState(null);
                 setPlatformerFinished(false);
@@ -115,32 +135,18 @@ export default function App() {
               setChampion(res.tournament.champion);
               transitionTo('champion');
             } else {
-              setScreen('waiting');
-              animateIn();
+              if (prevScreenRef.current !== 'lobby') {
+                setScreen('waiting');
+                animateIn();
+              }
             }
           } else {
             localStorage.removeItem('ttt-room-id');
-            setError(res.error || 'Session expired. Please join again.');
+            setError(res.error || 'Session expired');
             setScreen('lobby');
           }
         });
-      };
-      if (socket.connected) {
-        doRejoin();
-      } else {
-        socket.once('connect', doRejoin);
-        socket.once('connect_error', () => { setJoining(false); setScreen('lobby'); });
-        socket.connect();
       }
-    }
-  }, []);
-
-  useEffect(() => {
-    socket.on('room-update', (data) => {
-      setPlayers(data.players);
-      if (data.tournament) setTournament(data.tournament);
-      if (data.gameType) setGameType(data.gameType);
-      animateIn();
     });
 
     socket.on('tournament-start', (data) => {
@@ -325,6 +331,26 @@ export default function App() {
 
     socket.on('betting-finished', (data) => {
       setBets(data.bets);
+      const rid = localStorage.getItem('ttt-room-id');
+      const pid = getPersistentId();
+      setTimeout(() => {
+        if (rid && pid) {
+          socket.emit('rejoin-room', { roomId: rid, persistentId: pid }, (res) => {
+            if (res.success) {
+              if (res.currentMatch) {
+                setCurrentMatch(res.currentMatch);
+                setBoardVersion(0);
+                transitionTo('game');
+              } else if (res.tournament?.champion) {
+                setChampion(res.tournament.champion);
+                transitionTo('champion');
+              } else {
+                setScreen('waiting');
+              }
+            }
+          });
+        }
+      }, 12000);
     });
 
     socket.on('round-start', (data) => {

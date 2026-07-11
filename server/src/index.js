@@ -237,7 +237,10 @@ function startGame(roomId) {
   if (!series) return;
 
   const game = createGameForSeries(room.tournament, series, room.gameType || 'tictactoe');
-  if (!game) return;
+  if (!game) {
+    setTimeout(() => startGame(roomId), 3000);
+    return;
+  }
 
   if (game.type === 'platformer') {
     initPlatformerGame(game.platformerSetup);
