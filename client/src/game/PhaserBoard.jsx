@@ -11,9 +11,7 @@ export default function PhaserBoard({
   const containerRef = useRef(null);
   const gameRef = useRef(null);
   const sceneRef = useRef(null);
-  const [keys, setKeys] = useState({ left: false, right: false, jump: false });
   const keysRef = useRef({ left: false, right: false, jump: false });
-  const lastEmitRef = useRef('');
   const matchIdRef = useRef(null);
   const prevCoinsRef = useRef({});
   const wasDeadRef = useRef({});
@@ -126,12 +124,10 @@ export default function PhaserBoard({
   }, [platformerState]);
 
   useEffect(() => {
-    const s = JSON.stringify(keys);
-    if (s !== lastEmitRef.current) {
-      lastEmitRef.current = s;
-      socket.emit('platform-input', { matchId: platformerState?.matchId, keys });
+    if (matchIdRef.current) {
+      socket.emit('platform-input', { matchId: matchIdRef.current, keys: keysRef.current });
     }
-  }, [keys, platformerState?.matchId]);
+  }, [platformerState?.matchId]);
 
   const handleKey = useCallback((e, pressed) => {
     const key = e.key.toLowerCase();
@@ -146,10 +142,8 @@ export default function PhaserBoard({
       : (e.key === 'ArrowLeft' || key === 'a' ? 'left' : 'right');
     const next = { ...keysRef.current, [action]: pressed };
     keysRef.current = next;
-    setKeys(next);
     sceneRef.current?.setLocalInput?.(next);
     if (matchIdRef.current) {
-      lastEmitRef.current = JSON.stringify(next);
       socket.emit('platform-input', { matchId: matchIdRef.current, keys: next });
     }
   }, []);
