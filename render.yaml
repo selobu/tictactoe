@@ -2,8 +2,10 @@ services:
   - type: web
     name: tic-tac-tournament-server
     env: node
-    buildCommand: cd server && npm install
+    buildCommand: cd client && npm install && npm run build && cd ../server && npm install
     startCommand: cd server && npm start
     envVars:
+      - key: NODE_VERSION
+        value: "20"
       - key: PORT
         value: 10000

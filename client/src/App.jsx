@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { socket } from './socket';
 import Lobby from './components/Lobby';
 import WaitingRoom from './components/WaitingRoom';
@@ -40,10 +40,16 @@ export default function App() {
   const [message, setMessage] = useState('');
   const [winCombo, setWinCombo] = useState(null);
   const [screenTransition, setScreenTransition] = useState('');
+  const transitionTimerRef = useRef(null);
+  const trainingWantedRef = useRef(false);
   const [timer, setTimer] = useState(null);
   const [theme, setTheme] = useState(null);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState('');
+  const [availableRooms, setAvailableRooms] = useState([]);
+  const roomsConnectPending = useRef(false);
+  const [isTraining, setIsTraining] = useState(false);
+  const [trainingStarting, setTrainingStarting] = useState(false);
   const [winner, setWinner] = useState(null);
   const [bettingMatch, setBettingMatch] = useState(null);
   const [bettingPlayer1, setBettingPlayer1] = useState(null);
@@ -93,6 +99,10 @@ export default function App() {
       if (data.tournament) setTournament(data.tournament);
       if (data.gameType) setGameType(data.gameType);
       animateIn();
+    });
+
+    socket.on('rooms-update', (list) => {
+      setAvailableRooms(Array.isArray(list) ? list : []);
     });
 
     socket.on('connect', () => {
@@ -162,6 +172,7 @@ export default function App() {
     });
 
     socket.on('match-start', (data) => {
+      setIsTraining(false);
       setWinCombo(null);
       setWinner(null);
       setAbandonToast(null);
@@ -185,6 +196,35 @@ export default function App() {
       transitionTo('game');
       setMessage('');
       setTimeout(() => playMatchStartJingle(), 400);
+    });
+
+    socket.on('training-start', (data) => {
+      if (!trainingWantedRef.current) return;
+      setTrainingStarting(false);
+      setIsTraining(true);
+      setError('');
+      setPlayerId(data.player.id);
+      setPlayerName(data.player.name);
+      setCurrentMatch(data.match);
+      setPlatformerLevel(data.level);
+      setPlatformerState(null);
+      setPlatformerFinished(false);
+      setPlatformerResults(null);
+      setGameType('platformer');
+      setRoomId(null);
+      setPlayers([]);
+      setTournament(null);
+      setWinner(null);
+      setMessage('');
+      setBoardVersion(0);
+      transitionTo('game');
+      setTimeout(() => playMatchStartJingle(), 400);
+    });
+
+    socket.on('training-end', (data) => {
+      if (!trainingWantedRef.current) return;
+      setPlatformerFinished(true);
+      if (data?.results) setPlatformerResults(data.results);
     });
 
     socket.on('board-update', (data) => {
@@ -335,32 +375,6 @@ export default function App() {
 
     socket.on('betting-finished', (data) => {
       setBets(data.bets);
-      const rid = localStorage.getItem('ttt-room-id');
-      const pid = getPersistentId();
-      setTimeout(() => {
-        if (rid && pid) {
-          socket.emit('rejoin-room', { roomId: rid, persistentId: pid }, (res) => {
-            if (res.success) {
-              if (res.currentMatch) {
-                setCurrentMatch(res.currentMatch);
-                setBoardVersion(0);
-                transitionTo('game');
-              } else if (res.tournament?.champion) {
-                setChampion(res.tournament.champion);
-                setTournament(prev => ({
-                  ...prev,
-                  champion: res.tournament.champion,
-                  coChampion: res.tournament.coChampion,
-                  players: res.players || prev.players,
-                }));
-                transitionTo('champion');
-              } else {
-                setScreen('waiting');
-              }
-            }
-          });
-        }
-      }, 12000);
     });
 
     socket.on('round-start', (data) => {
@@ -402,6 +416,7 @@ export default function App() {
 
     return () => {
       socket.off('room-update');
+      socket.off('rooms-update');
       socket.off('tournament-start');
       socket.off('match-start');
       socket.off('board-update');
@@ -425,12 +440,19 @@ export default function App() {
       socket.off('penalty-waiting');
       socket.off('player-abandoned');
       socket.off('platformer-state');
+      socket.off('training-start');
+      socket.off('training-end');
     };
   }, []);
 
   function transitionTo(newScreen) {
+    if (transitionTimerRef.current) {
+      clearTimeout(transitionTimerRef.current);
+      transitionTimerRef.current = null;
+    }
     setScreenTransition('fade-out');
-    setTimeout(() => {
+    transitionTimerRef.current = setTimeout(() => {
+      transitionTimerRef.current = null;
       setScreen(newScreen);
       setScreenTransition('fade-in');
       setTimeout(() => setScreenTransition(''), 500);
@@ -507,6 +529,92 @@ export default function App() {
       socket.connect();
     }
   }, []);
+
+  const requestRooms = useCallback(() => {
+    socket.emit('list-rooms', (res) => {
+      if (res && Array.isArray(res.rooms)) setAvailableRooms(res.rooms);
+    });
+  }, []);
+
+  const refreshRooms = useCallback(() => {
+    if (socket.connected) {
+      requestRooms();
+      return;
+    }
+    if (roomsConnectPending.current) return;
+    roomsConnectPending.current = true;
+    const onConnect = () => {
+      roomsConnectPending.current = false;
+      socket.off('connect_error', onError);
+      requestRooms();
+    };
+    const onError = () => {
+      roomsConnectPending.current = false;
+    };
+    socket.once('connect', onConnect);
+    socket.once('connect_error', onError);
+    socket.connect();
+  }, [requestRooms]);
+
+  const handleStartTraining = useCallback((name, avatar, startLevel) => {
+    const persistentId = getPersistentId();
+    const playerName = (name || 'Player').trim().slice(0, 20) || 'Player';
+    trainingWantedRef.current = true;
+    setTrainingStarting(true);
+    setError('');
+    const doEmit = () => {
+      if (!trainingWantedRef.current) return;
+      socket.emit('start-training', {
+        playerName,
+        avatar: avatar || 'plumber-01',
+        persistentId,
+        startLevel: startLevel || 'grass',
+      });
+    };
+    if (socket.connected) {
+      doEmit();
+    } else {
+      socket.once('connect', doEmit);
+      socket.once('connect_error', (err) => {
+        setTrainingStarting(false);
+        setError(`Connection failed: ${err.message}`);
+      });
+      socket.connect();
+    }
+  }, []);
+
+  const handleExitTraining = useCallback(() => {
+    trainingWantedRef.current = false;
+    socket.emit('stop-training');
+    if (transitionTimerRef.current) {
+      clearTimeout(transitionTimerRef.current);
+      transitionTimerRef.current = null;
+    }
+    setIsTraining(false);
+    setTrainingStarting(false);
+    setCurrentMatch(null);
+    setPlatformerLevel(null);
+    setPlatformerState(null);
+    setPlatformerFinished(false);
+    setPlatformerResults(null);
+    setPlayerId(null);
+    setPlayers([]);
+    setRoomId(null);
+    setGameType('tictactoe');
+    setMessage('');
+    setError('');
+    setScreen('lobby');
+    animateIn();
+  }, []);
+
+  const handleRestartTraining = useCallback(() => {
+    if (!currentMatch?.player1) return;
+    handleStartTraining(
+      currentMatch.player1.name,
+      currentMatch.player1.avatar,
+      platformerLevel?.levelId || 'grass'
+    );
+  }, [currentMatch, platformerLevel, handleStartTraining]);
 
   const handleStartTournament = useCallback((selectedGameType) => {
     socket.emit('start-tournament', { gameType: selectedGameType || 'tictactoe' });
@@ -597,7 +705,12 @@ export default function App() {
     <div className="app" style={themeVars}>
       <MarioBackground />
       <header className="header">
-        <h1>Tic Tac Tournament</h1>
+        <h1 className="game-title">
+          <span className="title-word title-tic">Tic</span>
+          <span className="title-word title-tac">Tac</span>
+          <span className="title-word title-tournament">Tournament</span>
+        </h1>
+        <p className="title-sub">Mario Edition</p>
         {roomId && (
           <div className="room-info">
             Room: <code>{roomId}</code>
@@ -614,7 +727,7 @@ export default function App() {
       </header>
 
       <main className={`main ${screenTransition}`}>
-        {screen === 'lobby' && <Lobby onJoin={handleJoinRoom} joining={joining} error={error} />}
+        {screen === 'lobby' && <Lobby onJoin={handleJoinRoom} joining={joining} error={error} rooms={availableRooms} onRefreshRooms={refreshRooms} onTrain={handleStartTraining} trainingStarting={trainingStarting} />}
 
         {screen === 'waiting' && (
           <WaitingRoom
@@ -686,6 +799,7 @@ export default function App() {
               />
             ) : (gameType === 'platformer') ? (
               <PlatformerBoard
+                key={`${isTraining ? 'train' : 'match'}-${currentMatch.id}`}
                 platformerState={platformerState}
                 platformerLevel={platformerLevel}
                 player1={currentMatch.player1}
@@ -693,6 +807,9 @@ export default function App() {
                 myId={playerId}
                 finished={platformerFinished}
                 results={platformerResults}
+                training={isTraining}
+                onExitTraining={handleExitTraining}
+                onRestartTraining={handleRestartTraining}
               />
             ) : (gameType === 'minefinder' && currentMatch.type !== 'tictactoe') ? (
               <MineBoard key={`${currentMatch.id}-v${boardVersion}`}
@@ -724,6 +841,7 @@ export default function App() {
                 myId={playerId}
               />
             )}
+            {gameType !== 'platformer' && (
             <div className="players-sidebar">
               {players.find(p => p.id === playerId)?.isHost && currentMatch && players.some(p => !p.connected && (p.id === currentMatch.player1.id || p.id === currentMatch.player2.id)) && (
                 <>
@@ -760,6 +878,7 @@ export default function App() {
                 ))}
               </ul>
             </div>
+            )}
           </div>
         )}
 

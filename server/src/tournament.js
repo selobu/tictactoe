@@ -2,7 +2,7 @@ let matchIdCounter = 0;
 let botIdCounter = 0;
 
 import { createMineBoard as createMineBoardData, createPenaltyState } from './gameLogic.js';
-import { createPlatformerGameSetup } from './platformerLogic.js';
+import { createPlatformerGameSetup, PLATFORMER_LEVEL_IDS } from './platformerLogic.js';
 
 const BOT_AVATARS = ['boo', 'shark', 'koopa'];
 
@@ -108,7 +108,8 @@ export function createGameForSeries(tournament, series, gameType = 'tictactoe') 
     game.scores = { [p1.id]: 0, [p2.id]: 0 };
     game.currentTurn = p1.id;
   } else if (gameType === 'platformer') {
-    const setup = createPlatformerGameSetup([{ id: p1.id, name: p1.name, avatar: p1.avatar }, { id: p2.id, name: p2.name, avatar: p2.avatar }]);
+    const levelId = PLATFORMER_LEVEL_IDS[(series.id + series.games.length) % PLATFORMER_LEVEL_IDS.length];
+    const setup = createPlatformerGameSetup([{ id: p1.id, name: p1.name, avatar: p1.avatar }, { id: p2.id, name: p2.name, avatar: p2.avatar }], levelId);
     game.platformerSetup = setup;
     game.currentTurn = p1.id;
     game.scores = { [p1.id]: 0, [p2.id]: 0 };

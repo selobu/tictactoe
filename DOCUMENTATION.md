@@ -277,31 +277,50 @@ The root component manages all state and socket event listeners. It conditionall
 
 ### Definition
 
-26 avatars defined in `client/src/utils/marioAvatars.js`:
+51 avatars across two collections:
+
+- **Classic (26):** `client/src/utils/marioAvatars.js`, rendered by `MarioAvatar.jsx`.
+- **Custom animated (25):** `client/src/utils/customAvatars.js`, rendered by `Avatar.jsx` + `Avatar.css`.
 
 ```js
 export const MARIO_AVATARS = [
   { key: 'mario', name: 'Mario' },
   { key: 'luigi', name: 'Luigi' },
-  // ... 24 more
+  // ... 25 more classic avatars
 ];
 ```
 
 ### Rendering
 
-Each avatar has:
-1. **Color data** (`charData` in `MarioAvatar.jsx`) — palette of color properties (skin, hair, eye, body, etc.)
-2. **SVG renderer** — a function that returns JSX/SVG elements for a 40×40 viewBox
+Classic avatars use `charData` palettes in `MarioAvatar.jsx` with shared SVG sub-components (`MarioHat`, `Hair`, `Eyes`, `Cheeks`, `Mouth`, `Face`, `Body`, `Shoe`).
 
-Renderers use shared sub-components: `MarioHat`, `Hair`, `Eyes`, `Cheeks`, `Mouth`, `Face`, `Body`, `Shoe`.
+Custom avatars are full SVG illustrations in `Avatar.jsx` (96x96 viewBox) with:
+
+- Per-character idle motion using `data-character` CSS animations.
+- Animated internal details: blinking, petals, flames, gills, smoke, door swing, hat sway, and more.
+- Hover and selection reactions.
+- `prefers-reduced-motion` support.
+
+`AvatarDisplay.jsx` dispatches between the two systems, so custom avatars work everywhere: picker, waiting room, game cells, betting, results, and champion screens.
+
+### Avatar Picker
+
+`Lobby.jsx` shows two tabs:
+
+- **Classic (26):** the existing Mario-themed roster.
+- **New Characters (25):** the animated custom roster.
+
+The selected index is stored in `localStorage` (`ttt-player-avatar`), and the correct tab is restored from the saved index.
 
 ### Server Assignment
 
-The server maintains an `AVATARS` array and assigns avatars round-robin to players who don't explicitly pick one.
+The server maintains an `AVATARS` array (51 entries) and assigns avatars round-robin to players who don't explicitly pick one. Player-picked custom keys are accepted as long as they are unused in the room.
 
 ### Full List
 
-Mario, Luigi, Peach, Bowser, Toad, Yoshi, Boo, Star, Fire Flower, Koopa, Daisy, Rosalina, Wario, Waluigi, Shark, Smiling Shark, Chinese Princess, American Eagle, Mexican, Realtor, Sumo Fighter, Mexican Woman, Colombia, Business Man, Chespirito, Baby.
+**Classic (26):** Mario, Luigi, Peach, Bowser, Toad, Yoshi, Boo, Star, Fire Flower, Koopa, Daisy, Rosalina, Wario, Waluigi, Shark, Smiling Shark, Chinese Princess, American Eagle, Mexican, Realtor, Sumo Fighter, Mexican Woman, Colombia, Business Man, Chespirito, Baby.
+
+**Custom animated (25):** 12 Plumbers, Flower Person, Pine Tree, Smiling Cloud, Rocket, Mushroom, Cactus, Ringed Planet, Robot, Coffee Bean, Bald Eagle, Axolotl, Smiling House, Catrina.
 
 ---
 

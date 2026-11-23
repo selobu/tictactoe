@@ -5,7 +5,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createBoard, makeMove, createMineBoard, revealMineCell, revealAllMines, submitPenaltyChoice, startNextPenaltyKick } from './gameLogic.js';
-import { initPlatformerGame, tickPlatformerGame, getPlatformerDynamicState, getPlatformerLevelData, getPlatformerResults } from './platformerLogic.js';
+import { initPlatformerGame, tickPlatformerGame, getPlatformerDynamicState, getPlatformerLevelData, getPlatformerResults, createPlatformerGameSetup, PLATFORMER_LEVEL_IDS } from './platformerLogic.js';
 import {
   createTournament, startRound, createGameForSeries, finalizeSeries,
   checkRoundComplete, addCoins, penalizeDraw, getMostCoinsPlayer, getRoundResults,
@@ -31,6 +31,7 @@ const rooms = new Map();
 const timerIntervals = new Map();
 const bettingIntervals = new Map();
 const platformerIntervals = new Map();
+const trainingSessions = new Map();
 
 const reconnectTimers = new Map();
 const activePersistentIds = new Set();
@@ -45,12 +46,20 @@ function getPid(room, socketId) {
   return p ? p.id : null;
 }
 
+function stopTraining(socketId) {
+  const session = trainingSessions.get(socketId);
+  if (!session) return;
+  if (session.interval) clearInterval(session.interval);
+  trainingSessions.delete(socketId);
+}
+
 const TIME_LIMIT = 30000;
 const MOVE_COOLDOWN = 800;
 const FIRST_MOVE_COOLDOWN = 3000;
 const MAX_SPEED_POINTS = 50;
 const INITIAL_COINS = 1000;
 const BET_TIME_LIMIT = 40000;
+const MAX_PLAYERS = 16;
 
 const THEMES = [
   { x: '#f7971e', o: '#00b09b', bg1: '#0f0c29', bg2: '#302b63', glow: '#ffd200' },
@@ -71,10 +80,13 @@ function getNextTheme() {
 }
 
 const AVATARS = [
-  'mario', 'luigi', 'peach', 'bowser', 'toad', 'yoshi',
-  'boo', 'star', 'fireflower', 'koopa', 'daisy', 'rosalina',
-  'wario', 'waluigi', 'shark', 'smileShark',
-  'chinesePrincess', 'americanEagle', 'mexican', 'realtor', 'sumo', 'mexicanWoman', 'colombia', 'businessMan', 'chespirito', 'baby',
+  // Custom animated characters
+  'plumber-01', 'plumber-02', 'plumber-03', 'plumber-04',
+  'plumber-05', 'plumber-06', 'plumber-07', 'plumber-08',
+  'plumber-09', 'plumber-10', 'plumber-11', 'plumber-12',
+  'flower-01', 'pine-01', 'cloud-01', 'rocket-01',
+  'mushroom-01', 'cactus-01', 'planet-01', 'robot-01',
+  'coffee-01', 'eagle-01', 'axolotl-01', 'house-01', 'catrina-01',
 ];
 
 let avatarIndex = 0;
@@ -88,6 +100,40 @@ function getPlayerCoins(tournament, playerId) {
   if (!tournament) return null;
   const p = tournament.players.find((pl) => pl.id === playerId);
   return p ? (p.coins || 0) : null;
+}
+
+function getRoomSummaries() {
+  const summaries = [];
+  for (const [id, room] of rooms) {
+    const connected = room.players.filter((p) => p.connected);
+    if (connected.length === 0) continue;
+
+    const tournament = room.tournament;
+    if (tournament && (tournament.phase === 'finished' || tournament.phase === 'cancelled')) continue;
+
+    const host = room.players.find((p) => p.id === room.hostId) || connected[0];
+    summaries.push({
+      id,
+      hostName: host?.name || 'Unknown',
+      playerCount: connected.length,
+      maxPlayers: MAX_PLAYERS,
+      gameType: room.gameType || null,
+      status: tournament ? 'playing' : 'waiting',
+      round: tournament?.round || 0,
+      players: connected.slice(0, 4).map((p) => ({ id: p.id, name: p.name, avatar: p.avatar })),
+    });
+  }
+
+  const statusRank = { waiting: 0, playing: 1 };
+  return summaries.sort((a, b) =>
+    (statusRank[a.status] - statusRank[b.status]) ||
+    (b.playerCount - a.playerCount) ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+function broadcastRooms() {
+  io.emit('rooms-update', getRoomSummaries());
 }
 
 function emitRoomUpdate(roomId) {
@@ -106,6 +152,7 @@ function emitRoomUpdate(roomId) {
     tournament: room.tournament,
     gameType: room.gameType || 'tictactoe',
   });
+  broadcastRooms();
 }
 
 function initMatchTimer(game) {
@@ -357,6 +404,7 @@ function finishTournament(roomId) {
     bestBettor: bestBettor.length > 0 ? bestBettor : null,
     tournament: room.tournament,
   });
+  broadcastRooms();
 }
 
 function distributePot(tournament, series, winnerId) {
@@ -796,6 +844,76 @@ io.on('connection', (socket) => {
   let currentRoom = null;
   let currentPlayer = null;
 
+  socket.on('list-rooms', (callback) => {
+    const payload = { rooms: getRoomSummaries() };
+    if (typeof callback === 'function') callback(payload);
+    else socket.emit('rooms-update', payload.rooms);
+  });
+
+  socket.on('start-training', (payload = {}) => {
+    stopTraining(socket.id);
+
+    const persistentId = payload.persistentId || `train-${socket.id}`;
+    const playerName = String(payload.playerName || 'Player')
+      .replace(/[<>&"']/g, '')
+      .replace(/[\x00-\x1f]/g, '')
+      .trim()
+      .slice(0, 20) || 'Player';
+    const avatar = AVATARS.includes(payload.avatar) ? payload.avatar : AVATARS[0];
+    const playerInfo = { id: persistentId, name: playerName, avatar };
+
+    const setup = createPlatformerGameSetup(
+      [playerInfo],
+      PLATFORMER_LEVEL_IDS.includes(payload.startLevel) ? payload.startLevel : 'grass'
+    );
+    initPlatformerGame(setup);
+    const game = {
+      id: Date.now(),
+      type: 'platformer',
+      status: 'playing',
+      player1: playerInfo,
+      player2: null,
+      platformerSetup: setup,
+    };
+    const inputs = {
+      [playerInfo.id]: { left: false, right: false, jump: false, jumpQueued: false },
+    };
+    const session = {
+      socketId: socket.id,
+      player: playerInfo,
+      setup,
+      game,
+      inputs,
+      interval: null,
+    };
+    trainingSessions.set(socket.id, session);
+
+    const { platformerSetup, ...safeMatch } = game;
+    socket.emit('training-start', {
+      match: safeMatch,
+      level: getPlatformerLevelData(setup),
+      player: playerInfo,
+    });
+
+    session.interval = setInterval(() => {
+      const current = trainingSessions.get(socket.id);
+      if (!current) return;
+      tickPlatformerGame(current.setup, current.inputs);
+      const state = getPlatformerDynamicState(current.setup);
+      state.matchId = current.game.id;
+      socket.emit('platformer-state', state);
+      if (current.setup.finished) {
+        clearInterval(current.interval);
+        current.interval = null;
+        socket.emit('training-end', { results: getPlatformerResults(current.setup) });
+      }
+    }, 50);
+  });
+
+  socket.on('stop-training', () => {
+    stopTraining(socket.id);
+  });
+
   socket.on('join-room', ({ roomId, playerName, avatar, persistentId }, callback) => {
     let room = rooms.get(roomId);
     if (!room) {
@@ -854,7 +972,7 @@ io.on('connection', (socket) => {
     if (room.tournament && (room.tournament.phase === 'finished' || room.tournament.phase === 'cancelled')) {
       room.tournament = null;
     }
-    if (!avatar || room.players.some((p) => p.avatar === avatar)) avatar = getNextAvatar();
+    if (!avatar || !AVATARS.includes(avatar) || room.players.some((p) => p.avatar === avatar)) avatar = getNextAvatar();
 
     const sanitized = playerName
       .replace(/[<>&"']/g, '')
@@ -897,6 +1015,7 @@ io.on('connection', (socket) => {
     room.gameType = gameType;
     room.tournament = createTournament(room.players);
     io.to(currentRoom).emit('tournament-start', { tournament: room.tournament, gameType });
+    broadcastRooms();
 
     const info = startRound(room.tournament);
     if (info) {
@@ -1107,7 +1226,20 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('platform-input', ({ matchId, keys }) => {
+  socket.on('platform-input', ({ matchId, keys } = {}) => {
+    const training = trainingSessions.get(socket.id);
+    if (training && training.game.id === matchId) {
+      const k = keys || {};
+      const prev = training.inputs[training.player.id] || { jump: false, jumpQueued: false };
+      training.inputs[training.player.id] = {
+        left: !!k.left,
+        right: !!k.right,
+        jump: !!k.jump,
+        jumpQueued: !!prev.jumpQueued || (!!k.jump && !prev.jump),
+      };
+      return;
+    }
+
     const room = rooms.get(currentRoom);
     if (!room || !room.tournament) return;
     const game = room.tournament.currentGame;
@@ -1118,7 +1250,14 @@ io.on('connection', (socket) => {
       platformerInputs.set(currentRoom, {});
     }
     const inputs = platformerInputs.get(currentRoom);
-    inputs[pid] = { left: keys.left, right: keys.right, jump: keys.jump };
+    const prev = inputs[pid] || { jump: false, jumpQueued: false };
+    inputs[pid] = {
+      left: !!keys.left,
+      right: !!keys.right,
+      jump: !!keys.jump,
+      // Preserve a quick tap until the next simulation tick consumes it.
+      jumpQueued: !!prev.jumpQueued || (!!keys.jump && !prev.jump),
+    };
   });
 
   socket.on('leave-room', () => {
@@ -1132,6 +1271,7 @@ io.on('connection', (socket) => {
       player.connected = false;
       io.to(currentRoom).emit('player-abandoned', { playerName: player.name, playerId: player.id, avatar: player.avatar });
       handleDisconnectMatch(room, currentRoom, pid);
+      broadcastRooms();
       return;
     }
     emitRoomUpdate(currentRoom);
@@ -1210,6 +1350,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    stopTraining(socket.id);
     const room = rooms.get(currentRoom);
     const pid = currentPlayer?.id || (room ? findPlayerBySocket(room, socket.id)?.id : null);
     if (pid) activePersistentIds.delete(pid);
@@ -1225,6 +1366,7 @@ io.on('connection', (socket) => {
         stopTimerInterval(currentRoom);
         io.to(currentRoom).emit('tournament-cancelled', { reason: 'Too many players disconnected' });
         rooms.delete(currentRoom);
+        broadcastRooms();
         return;
       }
 
@@ -1261,6 +1403,7 @@ io.on('connection', (socket) => {
     if (room.players.every((p) => !p.connected)) {
       stopTimerInterval(currentRoom);
       rooms.delete(currentRoom);
+      broadcastRooms();
     }
   });
 });
