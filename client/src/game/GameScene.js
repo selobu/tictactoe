@@ -446,10 +446,6 @@ export default class GameScene extends Phaser.Scene {
       pred.jumps = 0;
       pred.vy = 0;
     }
-    if (sp.vy < -1 && pred.vy >= 0) {
-      pred.vy = sp.vy * 60;
-      pred.onGround = false;
-    }
   }
 
   simulateLocalStep(dt) {
