@@ -12,6 +12,8 @@ export default function PhaserBoard({
   const gameRef = useRef(null);
   const sceneRef = useRef(null);
   const keysRef = useRef({ left: false, right: false, jump: false });
+  const lastJumpEventStampRef = useRef(-1);
+  const lastJumpSentAtRef = useRef(0);
   const matchIdRef = useRef(null);
   const prevCoinsRef = useRef({});
   const wasDeadRef = useRef({});
@@ -140,6 +142,14 @@ export default function PhaserBoard({
     const action = isSpace || key === 'w'
       ? 'jump'
       : (e.key === 'ArrowLeft' || key === 'a' ? 'left' : 'right');
+    if (action === 'jump' && pressed) {
+      // Ignore the same physical key event reaching us twice and ultra-fast duplicates.
+      if (e.timeStamp === lastJumpEventStampRef.current) return;
+      lastJumpEventStampRef.current = e.timeStamp;
+      const now = performance.now();
+      if (now - lastJumpSentAtRef.current < 70) return;
+      lastJumpSentAtRef.current = now;
+    }
     const next = { ...keysRef.current, [action]: pressed };
     keysRef.current = next;
     sceneRef.current?.setLocalInput?.(next);

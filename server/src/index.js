@@ -1231,11 +1231,15 @@ io.on('connection', (socket) => {
     if (training && training.game.id === matchId) {
       const k = keys || {};
       const prev = training.inputs[training.player.id] || { jump: false, jumpQueued: false };
+      const now = Date.now();
+      const risingJump = !!k.jump && !prev.jump;
+      const canQueueJump = risingJump && (!prev.lastJumpPressAt || now - prev.lastJumpPressAt > 90);
       training.inputs[training.player.id] = {
         left: !!k.left,
         right: !!k.right,
         jump: !!k.jump,
-        jumpQueued: !!prev.jumpQueued || (!!k.jump && !prev.jump),
+        jumpQueued: !!prev.jumpQueued || canQueueJump,
+        lastJumpPressAt: canQueueJump ? now : (prev.lastJumpPressAt || 0),
       };
       return;
     }
@@ -1251,12 +1255,16 @@ io.on('connection', (socket) => {
     }
     const inputs = platformerInputs.get(currentRoom);
     const prev = inputs[pid] || { jump: false, jumpQueued: false };
+    const now = Date.now();
+    const risingJump = !!keys.jump && !prev.jump;
+    const canQueueJump = risingJump && (!prev.lastJumpPressAt || now - prev.lastJumpPressAt > 90);
     inputs[pid] = {
       left: !!keys.left,
       right: !!keys.right,
       jump: !!keys.jump,
       // Preserve a quick tap until the next simulation tick consumes it.
-      jumpQueued: !!prev.jumpQueued || (!!keys.jump && !prev.jump),
+      jumpQueued: !!prev.jumpQueued || canQueueJump,
+      lastJumpPressAt: canQueueJump ? now : (prev.lastJumpPressAt || 0),
     };
   });
 
