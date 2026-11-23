@@ -82,6 +82,11 @@ export default class GameScene extends Phaser.Scene {
     this.cameraFixedForBoss = false;
     this.gameOverShown = false;
     this.celebrateUntil = 0;
+    this.localInput = { left: false, right: false, jump: false };
+    this.pendingJump = false;
+    this.localPrediction = null;
+    this.localColliders = [];
+    this.predCfg = null;
     this.levelWidth = this.levelData?.width || 7000;
     this.groundTop = this.levelData?.groundTop || GROUND_Y;
     this.zones = this.levelData?.zones || DEFAULT_ZONES;
@@ -97,6 +102,7 @@ export default class GameScene extends Phaser.Scene {
     this.createAnimations();
     this.createLevel();
     this.createLevelOverlays();
+    this.setupLocalPrediction();
     this.createPlayerSprites();
     this.setupCameras();
     this.createHUD();
@@ -353,6 +359,212 @@ export default class GameScene extends Phaser.Scene {
     }
   }
 
+  setupLocalPrediction() {
+    const level = this.levelData || {};
+    const phys = level.physics || {};
+    this.predCfg = {
+      speed: 180,
+      jump: (phys.jump ?? -10.5) * 60,
+      doubleJump: (phys.doubleJump ?? -8.2) * 60,
+      gravity: (phys.gravity ?? 0.38) * 3600,
+      maxFall: (phys.maxFall ?? 8.5) * 60,
+      grip: phys.grip ?? 0.44,
+      airGrip: phys.airGrip ?? 0.08,
+      iceGrip: phys.iceGrip ?? 0.11,
+    };
+    this.localColliders = [];
+    const push = (rect) => {
+      if (rect && rect.w > 0 && rect.h > 0) {
+        this.localColliders.push({ x: rect.x, y: rect.y, w: rect.w, h: rect.h });
+      }
+    };
+    for (const p of level.platforms || []) push(p);
+    for (const p of level.pipes || []) push(p);
+    for (const q of level.questionBlocks || []) push(q);
+    if (level.arena?.gateX) {
+      this.localColliders.push({
+        x: level.arena.gateX, y: GROUND_Y - 230, w: 30, h: 230, gate: true,
+      });
+    }
+    if (level.arena?.start) {
+      this.localColliders.push({
+        x: level.arena.start + 4, y: GROUND_Y - 230, w: 32, h: 230, bossWall: true,
+      });
+    }
+  }
+
+  setLocalInput(keys) {
+    const prevJump = !!this.localInput?.jump;
+    this.localInput = {
+      left: !!keys?.left,
+      right: !!keys?.right,
+      jump: !!keys?.jump,
+    };
+    if (this.localInput.jump && !prevJump) this.pendingJump = true;
+  }
+
+  createPredictionFromState(sp) {
+    return {
+      x: sp.x,
+      y: sp.y,
+      controlVx: (sp.vx || 0) * 60,
+      vy: (sp.vy || 0) * 60,
+      onGround: !!sp.onGround,
+      jumps: sp.jumps || 0,
+      facing: sp.facing || 1,
+      coyote: sp.onGround ? 0.1 : 0,
+      jumpCutAvailable: false,
+      star: (sp.starTicks || 0) > 0,
+      bossLocked: !!(this.levelData?.arena && sp.x >= this.levelData.arena.start),
+    };
+  }
+
+  reconcileLocalPrediction(sp) {
+    if (!sp || sp.id !== this.myId) return;
+    if (!sp.alive || sp.dying || sp.finished) {
+      this.localPrediction = null;
+      this.pendingJump = false;
+      return;
+    }
+    if (!this.localPrediction) {
+      this.localPrediction = this.createPredictionFromState(sp);
+      return;
+    }
+    const pred = this.localPrediction;
+    const dx = sp.x - pred.x;
+    const dy = sp.y - pred.y;
+    if (Math.abs(dx) > 70 || Math.abs(dy) > 80) {
+      this.localPrediction = this.createPredictionFromState(sp);
+      this.pendingJump = false;
+      return;
+    }
+    pred.x += dx * 0.18;
+    pred.y += dy * 0.18;
+    pred.star = (sp.starTicks || 0) > 0;
+    if (sp.onGround && pred.vy >= 0) {
+      pred.onGround = true;
+      pred.jumps = 0;
+      pred.vy = 0;
+    }
+    if (sp.vy < -1 && pred.vy >= 0) {
+      pred.vy = sp.vy * 60;
+      pred.onGround = false;
+    }
+  }
+
+  simulateLocalStep(dt) {
+    const pred = this.localPrediction;
+    if (!pred) return;
+    const cfg = this.predCfg;
+    const input = this.localInput || {};
+    const level = this.levelData;
+    const left = !!input.left;
+    const right = !!input.right;
+    const moveDir = left && !right ? -1 : (right && !left ? 1 : 0);
+    if (moveDir !== 0) pred.facing = moveDir;
+
+    const feet = pred.y + PLAYER_H;
+    const centerX = pred.x + PLAYER_W / 2;
+    const onIce = pred.onGround && (level.icePatches || []).some(
+      (patch) => centerX >= patch.x && centerX <= patch.x + patch.w && feet >= patch.y - 10 && feet <= patch.y + 30
+    );
+    const grip = pred.onGround
+      ? (onIce ? cfg.iceGrip : cfg.grip)
+      : cfg.airGrip;
+    const speed = cfg.speed * (pred.star ? 1.35 : 1);
+    const desired = moveDir * speed;
+    pred.controlVx += (desired - pred.controlVx) * (1 - Math.pow(1 - grip, Math.min(0.05, dt) * 60));
+    if (moveDir === 0 && Math.abs(pred.controlVx) < 1.5) pred.controlVx = 0;
+    if (level.arena && pred.x >= level.arena.start) pred.bossLocked = true;
+
+    if (this.pendingJump) {
+      if (pred.onGround || pred.coyote > 0) {
+        pred.vy = cfg.jump;
+        pred.onGround = false;
+        pred.coyote = 0;
+        pred.jumps = 1;
+        pred.jumpCutAvailable = true;
+        playJumpSound(false);
+      } else if (pred.jumps < 2) {
+        pred.vy = cfg.doubleJump;
+        pred.jumps = 2;
+        pred.jumpCutAvailable = true;
+        playJumpSound(true);
+      }
+      this.pendingJump = false;
+    }
+    if (!input.jump && pred.vy < 0 && pred.jumpCutAvailable) {
+      pred.vy *= 0.55;
+      pred.jumpCutAvailable = false;
+    }
+
+    // Horizontal movement and collision.
+    pred.x += pred.controlVx * dt;
+    for (const c of this.localColliders) {
+      if (c.gate && this.bossGateOpened) continue;
+      if (c.bossWall && (!this.bossWallActive || !pred.bossLocked || this.bossWasDefeated)) continue;
+      if (
+        pred.x < c.x + c.w && pred.x + PLAYER_W > c.x &&
+        pred.y < c.y + c.h && pred.y + PLAYER_H > c.y
+      ) {
+        if (pred.controlVx > 0) pred.x = c.x - PLAYER_W;
+        else if (pred.controlVx < 0) pred.x = c.x + c.w;
+        pred.controlVx = 0;
+      }
+    }
+
+    // Vertical movement and collision.
+    pred.vy = Math.min(cfg.maxFall, pred.vy + cfg.gravity * dt);
+    pred.y += pred.vy * dt;
+    pred.onGround = false;
+    for (const c of this.localColliders) {
+      if (c.gate && this.bossGateOpened) continue;
+      if (c.bossWall && (!this.bossWallActive || !pred.bossLocked || this.bossWasDefeated)) continue;
+      if (
+        pred.x < c.x + c.w && pred.x + PLAYER_W > c.x &&
+        pred.y < c.y + c.h && pred.y + PLAYER_H > c.y
+      ) {
+        if (pred.vy > 0) {
+          pred.y = c.y - PLAYER_H;
+          pred.vy = 0;
+          pred.onGround = true;
+          pred.jumps = 0;
+          pred.jumpCutAvailable = false;
+        } else if (pred.vy < 0) {
+          pred.y = c.y + c.h;
+          pred.vy = 0;
+        }
+      }
+    }
+    pred.coyote = pred.onGround ? 0.1 : Math.max(0, pred.coyote - dt);
+    pred.x = Math.max(0, Math.min((level.width || 9100) - PLAYER_W, pred.x));
+  }
+
+  stepLocalPrediction(delta) {
+    if (!this.localPrediction) return;
+    let remaining = Math.min(delta, 80) / 1000;
+    while (remaining > 0) {
+      const step = Math.min(remaining, 1 / 60);
+      this.simulateLocalStep(step);
+      remaining -= step;
+    }
+    const pred = this.localPrediction;
+    const target = this.playerTargets?.[this.myId];
+    if (target) {
+      target.x = pred.x + PLAYER_W / 2;
+      target.y = pred.y + PLAYER_H / 2;
+    }
+    const sprite = this.playerSprites?.[this.myId];
+    if (sprite) {
+      const key = getRunnerTextureKey(this.avatars[this.myId]);
+      if (this.time.now < (this.celebrateUntil || 0)) sprite.anims.play(`${key}_cheer`, true);
+      else if (!pred.onGround) sprite.anims.play(pred.vy < 0 ? `${key}_jump` : `${key}_fall`, true);
+      else if (Math.abs(pred.controlVx) > 30) sprite.anims.play(`${key}_walk`, true);
+      else sprite.anims.play(`${key}_idle`, true);
+      sprite.setFlipX(pred.facing < 0);
+    }
+  }
+
   createBossArena(level) {    const gateX = level.arena?.gateX ?? level.boss.gateX;
     this.bossGate = this.add
       .image(gateX, this.groundTop - 230, 'boss-gate')
@@ -554,6 +766,7 @@ export default class GameScene extends Phaser.Scene {
   }
 
   update(time, delta) {
+    this.stepLocalPrediction(delta);
     const lerp = Math.min(1, delta / 35);
 
     const zoneTarget = this.playerTargets?.[this.cameraTargetId];
@@ -1338,12 +1551,12 @@ export default class GameScene extends Phaser.Scene {
     for (const sp of stateData.players) {
       const sprite = this.playerSprites[sp.id];
       if (!sprite) continue;
+      if (sp.id === this.myId) this.reconcileLocalPrediction(sp);
       const prev = this.prevPlayerState[sp.id];
       const target = this.playerTargets[sp.id];
       target.x = sp.x + PLAYER_W / 2;
       target.y = sp.y + PLAYER_H / 2;
       if (!prev || sp.justDied || (sp.alive && !prev.alive)) target.teleport = true;
-      if (sp.jumped && sp.id === this.myId) playJumpSound(sp.jumps === 2);
 
       if (sp.justDied && !this.deathGhosts[sp.id]) {
         this.createDeathAnimation(sp, sprite);

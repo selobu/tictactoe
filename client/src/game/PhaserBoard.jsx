@@ -12,9 +12,13 @@ export default function PhaserBoard({
   const gameRef = useRef(null);
   const sceneRef = useRef(null);
   const [keys, setKeys] = useState({ left: false, right: false, jump: false });
+  const keysRef = useRef({ left: false, right: false, jump: false });
   const lastEmitRef = useRef('');
+  const matchIdRef = useRef(null);
   const prevCoinsRef = useRef({});
   const wasDeadRef = useRef({});
+
+  matchIdRef.current = platformerState?.matchId || null;
 
   const isSpectator = myId !== player1?.id && myId !== player2?.id;
   const localGameOver = !!(
@@ -74,6 +78,7 @@ export default function PhaserBoard({
       }) || game.scene.getScene('GameScene');
     }
     sceneRef.current = scene;
+    if (scene?.setLocalInput) scene.setLocalInput(keysRef.current);
 
     if (scene && isSpectator) {
       scene.setCameraTarget(spectatorView || player1?.id);
@@ -139,7 +144,14 @@ export default function PhaserBoard({
     const action = isSpace || key === 'w'
       ? 'jump'
       : (e.key === 'ArrowLeft' || key === 'a' ? 'left' : 'right');
-    setKeys(prev => ({ ...prev, [action]: pressed }));
+    const next = { ...keysRef.current, [action]: pressed };
+    keysRef.current = next;
+    setKeys(next);
+    sceneRef.current?.setLocalInput?.(next);
+    if (matchIdRef.current) {
+      lastEmitRef.current = JSON.stringify(next);
+      socket.emit('platform-input', { matchId: matchIdRef.current, keys: next });
+    }
   }, []);
 
   useEffect(() => {
